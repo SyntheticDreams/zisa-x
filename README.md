@@ -8,6 +8,15 @@ It features an MMU with robust banking and memory mapping outside of the 64K mem
 The project includes a Python-based emulator, allowing users to experiment and develop software for the system in a modern environment.
 It also (partially) features hardware designs for constructing a real version of the computer. Two custom chips (for the MMU and keyboard controller) are designed for the ATF1504 CPLD (CUPL, SI, and JED files are provided).
 
+<p float="left">
+  <img src="https://github.com/SyntheticDreams/zisa-x/blob/main/screenshots/screen1.png" width=45% >
+  <img src="https://github.com/SyntheticDreams/zisa-x/blob/main/screenshots/screen2.png" width=45%>
+</p>
+<p float="left">
+  <img src="https://github.com/SyntheticDreams/zisa-x/blob/main/screenshots/screen3.png" width=45%>
+  <img src="https://github.com/SyntheticDreams/zisa-x/blob/main/screenshots/screen4.png" width=45%>
+</p>
+
 The emulator includes the following
   1. Emulation of common PC and Z80 hardware, including the CGA/EGA/VGA text buffer, the 82077A floppy controller, CTC compatible interrupt/timer controller, the MMU, and a PS/2 compatible keyboard controller
   2. A disk image for a customized version of CP/M 2.2
