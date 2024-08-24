@@ -1,4 +1,6 @@
-ZISA-X is a new computer architecture compatible with the Z80 processor and classic 8-bit ISA bus.
+# ZISA-X
+
+**ZISA-X is a new computer architecture compatible with the Z80 processor and classic 8-bit ISA bus.**
 
 This allows Z80 compatible software like CP/M-80 to interface with common and readily available PC hardware, including CGA/EGA/VGA cards, floppy controllers, serial controllers, etc.
 It features an MMU with robust banking and memory mapping outside of the 64K memory space, allowing resident "kernel modules" to provide hardware driver and extended user functionality without reducing memory available to normal programs (modules can augment and/or override any system call).
@@ -175,9 +177,11 @@ Stack notes:
 
 ZISA-X Memory Map
 
+```
 Startup/Console/Temporary Stack, Run_High Target = $8000:$C000 (16K)
 CCP = $C000:$C8F9 (2297)
 BDOS = $C8F9:$D96D (4212)
 BIOS = $DA00:$EA00 (4096)
 Interrupt Stack = $EE00:$F000 (512)
 Video FB = $F000:$FFFF (4096)
+```
