@@ -3,7 +3,7 @@
 **ZISA-X is a new computer architecture compatible with the Z80 processor and classic 8-bit ISA bus.**
 
 This allows Z80 compatible software like CP/M-80 to interface with common and readily available PC hardware, including CGA/EGA/VGA cards, floppy controllers, serial cards, etc.
-It features an MMU with robust banking and memory mapping outside of the 64K memory space, allowing resident "kernel modules" to provide hardware driver and extended user functionality without reducing memory available to normal programs (modules can augment and/or override any system call).
+It features an MMU with robust banking and memory mapping outside of the 64K memory space, allowing resident "kernel modules" to provide hardware driver and extended user functionality without reducing memory available to normal programs (modules can hook, extend and/or override any system call).
 
 The project includes a Python-based emulator, allowing users to experiment and develop software for the system in a modern environment.
 It also (partially) features hardware designs for constructing a real version of the computer. Two custom chips (for the MMU and keyboard controller) are designed for the ATF1504 CPLD (CUPL, SI, and JED files are provided).
