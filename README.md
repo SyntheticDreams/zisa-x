@@ -175,9 +175,11 @@ Stack notes:
 
 ZISA-X Memory Map
 
+```
 Startup/Console/Temporary Stack, Run_High Target = $8000:$C000 (16K)
 CCP = $C000:$C8F9 (2297)
 BDOS = $C8F9:$D96D (4212)
 BIOS = $DA00:$EA00 (4096)
 Interrupt Stack = $EE00:$F000 (512)
 Video FB = $F000:$FFFF (4096)
+```
