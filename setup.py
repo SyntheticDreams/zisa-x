@@ -15,7 +15,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name='ZISA-X',
+    name='zisa-x',
     version='1.0.0',
     author='Synthetic Dreams LLC',
     author_email='twestbrook@synthetic-dreams.com',
