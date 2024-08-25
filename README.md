@@ -42,6 +42,11 @@ For example, the following command runs the emulator with the CP/M 2.2 disk in d
 ```
 Note: The full paths to the images must be specified. The ROM image, default NVRAM image, CP/M 2.2, games, and additional disk images are included in the Python package.  Full source can be obtained from the git repository.
 
+When in CP/M, you can load the ADM-3A emulator driver to correctly render games using the MODULE command. This includes games like LADDER, NEMESIS, STARTREK.BAS, the VEZZA Z-machine interpreter, etc.
+```
+module /l adm3a
+```
+
 ## Status
   1. DONE: Emulator (and works like a champ!)
   2. DONE: BIOS (includes internal drivers for all emulated hardware. Also includes a robust system call library and kernel module handling)
