@@ -5,8 +5,8 @@
 This allows Z80 compatible software like CP/M-80 to interface with common and readily available PC hardware, including CGA/EGA/VGA cards, floppy controllers, serial cards, etc.
 It features an MMU with robust banking and memory mapping outside of the 64K memory space, allowing resident "kernel modules" to provide hardware driver and extended user functionality without reducing memory available to normal programs (modules can hook, extend and/or override any system call).
 
-The project includes a Python-based emulator, allowing users to experiment and develop software for the system in a modern environment.
-It also (partially) features hardware designs for constructing a real version of the computer. Two custom chips (for the MMU and keyboard controller) are designed for the ATF1504 CPLD (CUPL, SI, and JED files are provided).
+The project includes a **Python-based emulator**, allowing users to experiment and develop software for the system in a modern environment.
+It also features hardware designs for constructing a real version of the computer (see status section). Two custom chips (for the MMU and keyboard controller) are designed for the ATF1504 CPLD (CUPL, SI, and JED files are provided).
 
 <p float="left">
   <img src="https://github.com/SyntheticDreams/zisa-x/blob/main/screenshots/screen1.png" width=45% >
@@ -17,20 +17,38 @@ It also (partially) features hardware designs for constructing a real version of
   <img src="https://github.com/SyntheticDreams/zisa-x/blob/main/screenshots/screen4.png" width=45%>
 </p>
 
-The emulator includes the following
+#### The emulator includes:
   1. Emulation of common PC and Z80 hardware, including the CGA/EGA/VGA text buffer, the 82077A floppy controller, CTC compatible interrupt/timer controller, the MMU, and a PS/2 compatible keyboard controller
   2. A disk image for a customized version of CP/M 2.2
   3. A "kernel module" loader that allows users to load hardware drivers and customized functionality
   4. A kernel module for providing ADM-3A terminal emulation
   5. Extensive debugging functionality, including a fully logged trace of all CPU operations, a simple script language for manaully sending I/O commands, the ability to load binary images into memory at location 0x100, etc
-  
-Status:
+
+#### The development environment includes:
+  1. Z80 assembly library for making user mode system calls from z80asm compiled assembly programs
+  2. C header and definitions for making user or kernel mode system calls from z88dk compiled C programs
+  3. Example C source for implementing a normal user program
+  4. Example C source for implementing a resident kernel module
+  5. Disk definition for cpmtools
+     
+#### Usage:
+```
+ zisax.py [-h] [--d0 D0] [--d1 D1] [--tpa TPA] [--trace] [--debug] [--iotest] rom nvram
+```
+
+For example, the following command runs the emulator with the CP/M 2.2 disk in drive A: and the games disk in drive B:
+```
+ zisax.py rom.bin nvram.bin --d0 cpm22.img --d1 games.img 
+```
+Note: The full paths to the images must be specified. The ROM image, default NVRAM image, CP/M 2.2, games, and additional disk images are included in the Python package.  Full source can be obtained from the git repository.
+
+## Status
   1. DONE: Emulator (and works like a champ!)
   2. DONE: BIOS (includes internal drivers for all emulated hardware. Also includes a robust system call library and kernel module handling)
   3. DONE: Console (saves/loads settings to NVRAM, manual boot selection, etc)
   4. DONE: Kernel module manager/loader
   5. DONE: ADM-3A emulation kernel module
-  6. DONE: Development support files done (assembly and C headers/libraries for making system calls, kernel module templates)
+  6. DONE: Development environment (assembly and C headers/libraries for making system calls, kernel module templates, cpmtools disk definition)
   7. DONE: MMU and keyboard controller design (heavily tested in WinCUPL emulator)
   8. TODO: Testing MMU and keyboard controller in physical ATF1504AS
   9. TODO: Design, build, and test ZISA-X PS/2 card
@@ -40,7 +58,7 @@ Status:
 
 ZISA-X BIOS and Specification Notes
 
-General notes:
+## General notes
 
 * The ZISA-X architecture targets Z80 compatible processors and
   the 8-bit ISA bus. The MMU can address up to 1MB of ROM, 1MB of RAM,
@@ -119,7 +137,7 @@ General notes:
   you for all that you did for computer science and the industry, Gary. You
   deserve much more recognition than you get.
 
-Technical notes:
+## Technical notes
 
 * After copying itself from ROM to RAM, the BIOS intializes the MMU with the
   following configuration:
@@ -160,7 +178,7 @@ Technical notes:
     4. Destination address to jump to once copied (16-bit address)
     5. Type (0=Generic, 1=CP/M)
 
-Stack notes:
+#### Stack:
 
 * Interrupt stack is used by the BIOS during maskable interrupt events for
   internally handled functionality, such as the system timer and floppy
@@ -184,7 +202,7 @@ Stack notes:
   as mentioned above, the default CP/M stack sizes are sufficient,
   regardless of the number of complexity of active modules.
 
-ZISA-X Memory Map
+#### ZISA-X Memory Map:
 
 ```
 Startup/Console/Temporary Stack, Run_High Target = $8000:$C000 (16K)
@@ -193,6 +211,5 @@ BDOS = $C8F9:$DA00 (4212 used + 147 free = 4359)
 BIOS = $DA00:$EE00 (4825 used + 295 free = 5120)
 Interrupt Stack = $EE00:$F000 (512)
 Video FB = $F000:$FFFF (4096)
-
-Note: BDOS and BIOS areas include unused buffer for future additions. Memory map currently subject to change.
 ```
+Note: BDOS and BIOS areas include unused buffer for future additions. Memory map currently subject to change.
