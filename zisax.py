@@ -1051,7 +1051,7 @@ def log(message, dest="debug"):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("bios", type=str, help="BIOS image path")
+    parser.add_argument("rom", type=str, help="ROM image path")
     parser.add_argument("nvram", type=str, help="NVRAM image path")
     parser.add_argument("--d0", type=str, help="Floppy A: image path")
     parser.add_argument("--d1", type=str, help="Floppy B: image path")
@@ -1182,7 +1182,7 @@ def main():
     cpu.set_input_callback(input_handler)
     cpu.set_output_callback(output_handler)
 
-    mmu.load_rom(args.bios)
+    mmu.load_rom(args.rom)
     mmu.load_nvram(args.nvram)
 
     if args.tpa:

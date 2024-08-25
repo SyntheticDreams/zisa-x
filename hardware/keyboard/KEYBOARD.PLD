@@ -8,7 +8,7 @@ Assembly None ;
 Location  ;
 Device   f1504ispplcc44;
 
-/* See README for MMU documentation */
+/* See README for keyboard documentation */
 
 /* Reserved pins: 7, 13, 32, 38 (JTAG). 3, 10, 15, 22, 23, 30, 35, 42 (VCC/GND) */    
     
