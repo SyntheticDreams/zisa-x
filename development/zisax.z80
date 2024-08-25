@@ -1,0 +1,234 @@
+SYSTEM_COLD_BOOT: macro
+    ld e, $00
+    rst $28
+endm
+
+SYSTEM_WARM_BOOT: macro
+    ld e, $01
+    rst $28
+endm
+
+SYSTEM_RUN_HIGH: macro
+    ld e, $02
+    rst $28
+endm
+
+SYSTEM_MODULE_REGISTER: macro
+    ld e, $03
+    rst $28
+endm
+
+SYSTEM_MODULE_COUNT: macro
+    ld e, $04
+    rst $28
+endm
+
+SYSTEM_WAIT_TICK: macro
+    ld e, $05
+    rst $28
+endm
+
+SYSTEM_LOAD_SETTINGS: macro
+    ld e, $06
+    rst $28
+endm
+
+SYSTEM_SAVE_SETTINGS: macro
+    ld e, $07
+    rst $28
+endm
+
+SYSTEM_GET_SETTINGS: macro
+    ld e, $08
+    rst $28
+endm
+
+MMU_GET_MAPPED: macro
+    ld e, $10
+    rst $28
+endm
+
+MMU_SET_MAPPED: macro
+    ld e, $11
+    rst $28
+endm
+
+MMU_GET_MODE: macro
+    ld e, $12
+    rst $28
+endm
+
+MMU_SET_MODE: macro
+    ld e, $13
+    rst $28
+endm
+
+MMU_GET_BANK: macro
+    ld e, $14
+    rst $28
+endm
+
+MMU_SET_BANK: macro
+    ld e, $15
+    rst $28
+endm
+
+MMU_GET_IOBANK: macro
+    ld e, $16
+    rst $28
+endm
+
+MMU_SET_IOBANK: macro
+    ld e, $17
+    rst $28
+endm
+
+VIDEO_SET_CURSOR_POS: macro
+    ld e, $20
+    rst $28
+endm
+
+VIDEO_GET_CURSOR_POS: macro
+    ld e, $21
+    rst $28
+endm
+
+VIDEO_CURSOR_UP: macro
+    ld e, $22
+    rst $28
+endm
+
+VIDEO_CURSOR_DOWN: macro
+    ld e, $23
+    rst $28
+endm
+
+VIDEO_CURSOR_LEFT: macro
+    ld e, $24
+    rst $28
+endm
+
+VIDEO_CURSOR_RIGHT: macro
+    ld e, $25
+    rst $28
+endm
+
+VIDEO_CURSOR_RETURN: macro
+    ld e, $26
+    rst $28
+endm
+
+VIDEO_CURSOR_END: macro
+    ld e, $27
+    rst $28
+endm
+
+VIDEO_CLEAR_SCREEN: macro
+    ld e, $28
+    rst $29
+endm
+
+VIDEO_DELETE_ROW: macro
+    ld e, $29
+    rst $28
+endm
+
+VIDEO_INSERT_ROW: macro
+    ld e, $2A
+    rst $28
+endm
+
+VIDEO_CLEAR_EOL: macro
+    ld e, $2B
+    rst $28
+endm
+
+VIDEO_CLEAR_EOS: macro
+    ld e, $2C
+    rst $28
+endm
+
+VIDEO_SET_CHAR: macro
+    ld e, $2D
+    rst $28
+endm
+
+VIDEO_PRINT_CHAR: macro
+    ld e, $2E
+    rst $28
+endm
+
+VIDEO_PRINT_STR: macro
+    ld e, $2F
+    rst $28
+endm
+
+VIDEO_HARDWARE_CURSOR: macro
+    ld e, $30
+    rst $28
+endm
+
+VIDEO_SET_ATTRIBUTE: macro
+    ld e, $31
+    rst $28
+endm
+
+KEYBOARD_GET_KEY: macro
+    ld e, $40
+    rst $28
+endm
+
+KEYBOARD_AVAIL_KEY: macro
+    ld e, $41
+    rst $28
+endm
+
+FLOPPY_RESET: macro
+    ld e, $50
+    rst $28
+endm
+
+FLOPPY_SET_DRIVE: macro
+    ld e, $51
+    rst $28
+endm
+
+FLOPPY_DRIVE_RECALIBRATE: macro
+    ld e, $52
+    rst $28
+endm
+
+FLOPPY_SET_HEAD: macro
+    ld e, $53
+    rst $28
+endm
+
+FLOPPY_SET_TRACK: macro
+    ld e, $54
+    rst $28
+endm
+
+FLOPPY_SET_SECTOR: macro
+    ld e, $55
+    rst $28
+endm
+
+FLOPPY_SET_LOG_SECTOR: macro
+    ld e, $56
+    rst $28
+endm
+
+FLOPPY_READ: macro
+    ld e, $57
+    rst $28
+endm
+
+FLOPPY_WRITE: macro
+    ld e, $58
+    rst $28
+endm
+
+FLOPPY_BOOT: macro
+    ld e, $59
+    rst $28
+endm

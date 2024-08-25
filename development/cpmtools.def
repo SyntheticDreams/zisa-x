@@ -1,0 +1,11 @@
+# Synthetic Dreams ZISA-X architecture
+diskdef zisa-x
+  seclen 128
+  tracks 40
+  sectrk 64
+  blocksize 2048
+  maxdir 64
+  skew 0
+  boottrk 1
+  os 2.2
+end

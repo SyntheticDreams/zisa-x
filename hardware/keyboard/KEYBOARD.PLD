@@ -1,0 +1,157 @@
+Name     Name ;
+PartNo   00 ;
+Date     8/2/2024 ;
+Revision 01 ;
+Designer Engineer ;
+Company  Synthetic Dreams ;
+Assembly None ;
+Location  ;
+Device   f1504ispplcc44;
+
+/* See README for MMU documentation */
+
+/* Reserved pins: 7, 13, 32, 38 (JTAG). 3, 10, 15, 22, 23, 30, 35, 42 (VCC/GND) */    
+    
+/* Input Pins */
+PIN 1 = IOE;
+PIN 2 = CLK;
+PIN 4 = WE;
+PIN 5 = A0;
+PIN 6 = A1;
+PIN 8 = A2;
+PIN 9 = A3;
+PIN 11 = A4;    
+PIN 12 = A5;
+PIN 14 = A6;
+PIN 16 = A7;
+PIN 17 = A8;
+PIN 18 = A9;
+PIN 19 = A10;
+PIN 20 = A11;
+PIN 21 = A12;
+PIN 24 = A13;
+PIN 25 = A14;
+PIN 26 = A15;
+PIN 27 = PS2_CLK_IN;
+PIN 28 = PS2_DATA_IN;
+
+/* In/Out Pins */
+PIN 29 = D0;
+PIN 31 = D1;
+PIN 33 = D2;
+PIN 34 = D3;
+PIN 36 = D4;
+PIN 37 = D5;
+PIN 39 = D6;
+PIN 40 = D7;
+
+/* Output pins */
+PIN 41 = PS2_CLK_OUT;
+PIN 43 = PS2_DATA_OUT;
+
+NODE [reg_inbuffer8..1];
+NODE [reg_outbuffer8..1];
+NODE reg_startcmd;
+NODE reg_ack;
+NODE [reg_pos10..1];
+NODE reg_direction;
+NODE inbuffer_full;
+NODE inbuffer_partial;
+NODE [inbuffer_read_start1..0];
+NODE outbuffer_write_start;
+NODE outbuffer_parity;
+
+/* Internal Logic - those marked with ~ indicate may be used asynchronously to cross clock domains (CLK->PS2_CLK) */
+cs = !([A15..6]:#) & A5 & !A4 & !A3 & !A2;                                     /* IO Address 0x0020 */ 
+inbuffer_empty = !inbuffer_partial & !inbuffer_full;                           /* Not partial and not full */
+inbuffer_read_active = IOE & !WE & reg_inbuffer_sel & inbuffer_full;           /* IO read from input buffer when buffer is full */
+inbuffer_read_done = inbuffer_read_start1 & !inbuffer_read_active;              /* ~IO read from input buffer started but no longer active~ */
+outbuffer_write_active = IOE & WE & reg_outbuffer_sel;                         /* IO write to output buffer */
+outbuffer_write_done = outbuffer_write_start & !outbuffer_write_active;        /* ~IO write to output buffer started but no longer active~ */
+startcmd_write_active = IOE & WE & reg_startcmd_sel;                           /* IO write to start command register */
+
+/* Internal register - Input buffer partially filled */
+inbuffer_partial.ck = !PS2_CLK_IN;
+inbuffer_partial.ce = reg_pos0 # reg_pos10;                                    /* Update partial at first or second to last position */
+inbuffer_partial.d = reg_pos0 & !reg_direction;
+inbuffer_partial.ar = reg_startcmd;
+
+/* Internal register - Input buffer filled */
+inbuffer_full.ck = !PS2_CLK_IN;
+inbuffer_full.ce = reg_pos10;                                                  /* Update full at last position */
+inbuffer_full.d = !reg_direction;
+inbuffer_full.ar = inbuffer_read_done # reg_startcmd;                          /* Reset from system clock domain */
+
+/* Internal register - Read to input buffer from system bus has started */
+[inbuffer_read_start1..0].ck = CLK;                                            /* Read activity updated in bus clock domain */
+inbuffer_read_start0.ce = inbuffer_read_active # inbuffer_read_start0;         /* If active or previously active, update read start */
+inbuffer_read_start1.ce = inbuffer_read_start0 # inbuffer_read_start1;         /* If active or previously active, update read start */
+inbuffer_read_start0.d = inbuffer_read_active;
+inbuffer_read_start1.d = inbuffer_read_start0;                                 /* Update to if currently active */
+
+/* Internal register - Calculated parity of output buffer */
+outbuffer_parity.ck = !PS2_CLK_IN;                                             /* Parity recorded on rising edge when data set */
+outbuffer_parity.d = outbuffer_parity $ PS2_DATA_OUT;
+outbuffer_parity.ar = reg_pos0; 
+
+/* Internal register - Write to output buffer from system bus has started */
+outbuffer_write_start.ck = CLK;                                                /* Read activity updated in bus clock domain */
+outbuffer_write_start.ce = outbuffer_write_active # outbuffer_write_start;     /* If active or previously active, update write start */
+outbuffer_write_start.d = reg_startcmd;                                        /* Only allow write mode to start if command was previously started */  
+
+/* Internal register - Current position in input/output buffer */
+[reg_pos10..1].ck = !PS2_CLK_IN;
+[reg_pos10..1].d = [reg_pos9..0];
+[reg_pos10..1].ar = inbuffer_read_done # outbuffer_write_done # reg_startcmd; 
+reg_pos0 = !([reg_pos10..1]:#);
+
+/* Internal register - PS/2 communication direction (0=Read, 1=Write) */
+reg_direction.ck = !PS2_CLK_IN;
+reg_direction.ce = reg_pos10;                                                  /* Change direction when at position 10 or when outbuffer write completes */
+reg_direction.d = 'b'0;  
+reg_direction.ap = outbuffer_write_done;                                       /* 0 = Read, 1 = Write */
+
+/* Register - Input Buffer (0x0200) */
+reg_inbuffer_sel = cs & !A1 & !A0;
+[reg_inbuffer8..1].ck = !PS2_CLK_IN;                                           /* PS/2 data channel read happens on falling edge */
+[reg_inbuffer8..1].ce = [reg_pos8..1] & !reg_direction;
+[reg_inbuffer8..1].d = PS2_DATA_IN;
+[reg_inbuffer8..1].ar = inbuffer_read_done # reg_startcmd;                     /* Clear input buffer when done reading or when starting new command */
+
+/* Register - Output Buffer (0x0201) */
+reg_outbuffer_sel = cs & !A1 & A0;
+[reg_outbuffer8..1].ck = CLK;
+[reg_outbuffer8..1].ce = outbuffer_write_active & reg_startcmd;                /* Only update output buffer if command started */
+[reg_outbuffer8..1].d = [D7..0];
+[reg_outbuffer8..1].ar = reg_pos10;                                            /* Reset across clock domain when done writing full command to PS/2 data channel */
+
+/* Register - Start Command (0x0202) */
+reg_startcmd_sel = cs & A1 & !A0;
+reg_startcmd.ck = CLK;
+reg_startcmd.ce = startcmd_write_active # outbuffer_write_done;
+reg_startcmd.d = (startcmd_write_active & D0);
+
+/* Register - Command Ack (0x0203) */
+reg_ack_sel = cs & A1 & A0;
+reg_ack.ck = !PS2_CLK_IN;
+reg_ack.ce = reg_pos10 & reg_direction;
+reg_ack.d = PS2_DATA_IN;
+
+/* Output - Data Bus */
+D0 = (reg_inbuffer1 & reg_inbuffer_sel & inbuffer_full) # (reg_ack & reg_ack_sel);
+[D7..1] = ([reg_inbuffer8..2] & reg_inbuffer_sel & inbuffer_full);
+[D7..0].oe = IOE & !WE & (reg_inbuffer_sel # reg_outbuffer_sel # reg_startcmd_sel # reg_ack_sel);
+
+/* Output - PS/2 */
+PS2_CLK_OUT = !(inbuffer_full # reg_startcmd);
+PS2_DATA_OUT = !(reg_direction & (
+                    reg_pos0 #
+                    (reg_pos1 & !reg_outbuffer1) # 
+                    (reg_pos2 & !reg_outbuffer2) #
+                    (reg_pos3 & !reg_outbuffer3) #
+                    (reg_pos4 & !reg_outbuffer4) #
+                    (reg_pos5 & !reg_outbuffer5) #
+                    (reg_pos6 & !reg_outbuffer6) #
+                    (reg_pos7 & !reg_outbuffer7) #
+                    (reg_pos8 & !reg_outbuffer8) #
+                    (reg_pos9 & outbuffer_parity)));

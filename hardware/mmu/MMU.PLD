@@ -1,0 +1,120 @@
+Name     Name ;
+PartNo   00 ;
+Date     8/2/2024 ;
+Revision 01 ;
+Designer Engineer ;
+Company  Synthetic Dreams ;
+Assembly None ;
+Location  ;
+Device   f1504ispplcc44;
+
+/* See README for MMU documentation */
+
+/* Reserved pins: 7, 13, 32, 38 (JTAG). 3, 10, 15, 22, 23, 30, 35, 42 (VCC/GND) */    
+    
+/* Input Pins */
+PIN 1 = IOE;
+PIN 2 = CLK;
+PIN 4 = WE;
+PIN 5 = A0;
+PIN 6 = A1;
+PIN 8 = AG0;  /* A7 # A6 # A5 # A4 # A3 # A2 */
+PIN 9 = AG1;  /* A11 # A10 # A9 # A8 */
+PIN 11 = A12;    
+PIN 12 = A13;
+PIN 14 = A14;
+PIN 16 = A15;
+PIN 17 = D0;
+PIN 18 = D1;
+PIN 19 = D2;
+PIN 20 = D3;
+PIN 21 = D4;
+PIN 24 = D5;
+PIN 25 = D6;
+PIN 26 = D7;
+
+/* Output Pins */
+PIN 27 = AO12;
+PIN 28 = AO13;
+PIN 29 = AO14;
+PIN 31 = AO15;
+PIN 33 = AO16;
+PIN 34 = AO17;
+PIN 36 = AO18;
+PIN 37 = AO19;
+PIN 39 = ROM_SEL;
+PIN 40 = RAM_SEL;
+PIN 41 = ISA_SEL;
+PIN 43 = NVRAM_SEL;
+
+/* Register - Map (0x00) */
+NODE [reg_map2..0];
+reg_map_sel = !A15 & !A14 & !A13 & !A12 & !AG1 & !AG0 & !A1 & !A0;
+[reg_map2..0].ck = CLK;
+[reg_map2..0].ce = IOE & WE & reg_map_sel;
+[reg_map2..0].d = [D2..0];
+
+/* Register - Mode (0x01) */
+NODE [reg_mode1..0];
+reg_mode_sel = !A15 & !A14 & !A13 & !A12 & !AG1 & !AG0 & !A1 & A0;
+[reg_mode1..0].ck = CLK;
+[reg_mode1..0].ce = IOE & WE & reg_mode_sel;
+[reg_mode1..0].d = [D1..0];
+
+/* Register - Bank (0x02) */
+NODE [reg_bank4..0];
+reg_bank_sel = !A15 & !A14 & !A13 & !A12 & !AG1 & !AG0 & A1 & !A0;
+[reg_bank4..0].ck = CLK;
+[reg_bank4..0].ce = IOE & WE & reg_bank_sel;
+[reg_bank4..0].d = [D4..0];
+
+/* Register - ISABank (0x03) */
+NODE [reg_isabank7..0];
+reg_isabank_sel = !A15 & !A14 & !A13 & !A12 & !AG1 & !AG0 & A1 & A0;
+[reg_isabank7..0].ck = CLK;
+[reg_isabank7..0].ce = IOE & WE & reg_isabank_sel;
+[reg_isabank7..0].d = [D7..0];
+
+/* Selected Mode */
+mode_rom = !reg_mode1 & !reg_mode0;
+mode_ram = !reg_mode1 & reg_mode0;
+mode_isa = reg_mode1 & !reg_mode0;
+mode_nvram = reg_mode1 & reg_mode0;
+
+/* Mapping and Range Active */
+map_page = reg_map0 & !AG1 & !([A15..12]:#); /* 0x0000:0x00FF */
+map_upper = reg_map1 & A15;                  /* 0x8000:0xFFFF */
+map_isa = reg_map2 & [A15..12]:&;            /* 0xF000:0xFFFF */
+
+/* Bank Location */
+bank_addr0 = reg_bank0 $ A15;
+bank_carry0 = (reg_bank0 & A15);
+[bank_addr1..4] = [reg_bank1..4] $ [bank_carry0..3];
+[bank_carry1..3] = [reg_bank1..3] & [bank_carry0..2];
+
+/* Output - Chip Selects */
+ROM_SEL = !IOE & (mode_rom & !map_page & !map_upper & !map_isa);
+RAM_SEL = !IOE & ((mode_ram & !map_isa) # map_page # (map_upper & !map_isa));
+ISA_SEL = IOE # ((mode_isa & !map_page & !map_upper) # map_isa);
+NVRAM_SEL = !IOE & (mode_nvram & !map_page & !map_upper & !map_isa);
+
+/* Output - Address */
+[AO14..12] = ([A14..12] & (IOE # !map_isa)) #                            /* Use native A12-14 if IO or not mapped ISA */
+             ([reg_isabank2..0] & !IOE & map_isa);                       /* otherwise use ISA bank address */
+AO15 = (A15 & (IOE # map_page # (map_upper & !map_isa))) #               /* Use native A15 if IO or mapped page 0 or mapped upper/not mapped ISA */
+       (bank_addr0 & !IOE & !map_page & !map_upper & !map_isa) #         /* Use bank address if not IO and not hitting any mapped area */
+       (reg_isabank3 & !IOE & map_isa);                                  /* Use ISA bank address if not IO and hitting mapped ISA */
+[AO19..16] = !IOE &                                                      /* Unset A16-A19 if IO */
+                (([bank_addr4..1] & !map_page & !map_upper & !map_isa) # /* Use bank address if not IO and not hitting any mapped area */ 
+                ([reg_isabank7..4] & map_isa));                          /* Use ISA bank address if not IO and hitting mapped ISA */
+
+/* Output - Bidirectional Data */
+D0 = (reg_mode0 & reg_mode_sel) # (reg_map0 & reg_map_sel) # (reg_bank0 & reg_bank_sel) # (reg_isabank0 & reg_isabank_sel);
+D1 = (reg_mode1 & reg_mode_sel) # (reg_map1 & reg_map_sel) # (reg_bank1 & reg_bank_sel) # (reg_isabank1 & reg_isabank_sel);
+D2 = (reg_map2 & reg_map_sel) # (reg_bank2 & reg_bank_sel) # (reg_isabank2 & reg_isabank_sel);
+D3 = (reg_bank3 & reg_bank_sel) # (reg_isabank3 & reg_isabank_sel);
+D4 = (reg_bank4 & reg_bank_sel) # (reg_isabank4 & reg_isabank_sel);
+D5 = reg_isabank5 & reg_isabank_sel;
+D6 = reg_isabank6 & reg_isabank_sel;
+D7 = reg_isabank7 & reg_isabank_sel;
+[D7..0].oe = IOE & !WE & (reg_mode_sel # reg_map_sel # reg_bank_sel # reg_isabank_sel);

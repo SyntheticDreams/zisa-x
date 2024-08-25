@@ -1,0 +1,2958 @@
+;
+;   This file is part of ZISA-X                                                                                                                                                                                                                                                                                             
+;                                                                                                                                                                                                                                                                                                                           
+;   SPDX-FileCopyrightText: 2024 Synthetic Dreams LLC <twestbrook@synthetic-dreams.com>                                                                                                                                                                                                                                     
+;                                                                                                                                                                                                                                                                                                                           
+;   SPDX-License-Identifier: GPL-3.0-only
+;
+
+;   ZISA-X BIOS 1.0.0 Copyright (c) 2024, Synthetic Dreams LLC
+;
+;   See README for architecture details.
+;   System call IDs can be found in the "System Function Dispatcher" section.
+
+VM: equ 1
+
+ADDR_RST: equ $0000
+ADDR_INTJUMP: equ $0040
+ADDR_CCP: equ $C000
+ADDR_BDOS: equ $C8F9
+ADDR_BIOS: equ $DA00
+ADDR_STACK_INT: equ $F000
+ADDR_STACK_STARTUP: equ $C000
+ADDR_VIDEO: equ $F000
+
+PORT_MAPPED: equ $0000
+PORT_MODE: equ $0001
+PORT_BANK: equ $0002
+PORT_IOBANK: equ $0003
+PORT_CTC: equ $0010
+PORT_KEYBOARD: equ $0020
+PORT_DISK: equ $0030
+PORT_CGA: equ $03D0
+PORT_FDC_DOR: equ $03F2
+PORT_FDC_DSR: equ $03F4
+PORT_FDC_MSR: equ $03F4
+PORT_FDC_FIFO: equ $03F5
+
+MMU_MAPPED_PAGE0: equ $01
+MMU_MAPPED_UPPER: equ $02
+MMU_MAPPED_VIDEO: equ $04
+
+DRIVE_LAST: equ $01
+DRIVE_SECTORS: equ 64
+
+FLOPPY_RETRY: equ 10
+FLOPPY_MOTOR_STARTUP: equ 2
+FLOPPY_MOTOR_SHUTDOWN: equ 40
+FLOPPY_GPL: equ $0A
+
+VIDEO_COLS: equ 80
+VIDEO_ROWS: equ 25
+
+INT_START: macro
+    di
+    ld (system_user_stack), sp
+    ld sp, ADDR_STACK_INT
+    push af
+    push bc
+    push de
+    push hl
+    push ix
+    push iy
+endm
+
+INT_END: macro
+    pop iy
+    pop ix
+    pop hl
+    pop de
+    pop bc
+    pop af
+    ld sp, (system_user_stack)
+    ei
+endm
+
+FLOPPY_WAIT_FIFO_READ: macro A
+    call floppy_wait_fifo_read
+    cp 0
+    jp nz, A
+endm
+
+FLOPPY_WAIT_FIFO_WRITE: macro A
+    call floppy_wait_fifo_write
+    cp 0
+    jp nz, A
+endm
+
+loader_start:
+    ; Manually turn on upper overlay (RAM BIOS routines aren't available yet and stack pointer would be lost)
+    ld a, MMU_MAPPED_UPPER
+    ld bc, PORT_MAPPED
+    out(c), a
+
+    ; Copy ROM BIOS to RAM BIOS
+    ld hl, BIOS_COPY_START
+    ld de, ADDR_BIOS
+    ld bc, BIOS_END - BIOS_START
+    ldir
+
+    ; Jump to RAM BIOS (cold boot)
+    jp system_cold_boot
+
+BIOS_COPY_START:
+org ADDR_BIOS
+BIOS_START:
+    jp system_cold_boot       ; -3 = BOOT (Cold boot)
+
+WBOOT_START:
+    jp cpm_warm        ; 0 = Warm boot
+    jp cpm_const       ; 3 = Console status
+    jp cpm_conin       ; 6 = Console input
+    jp cpm_conout      ; 9 = Console output
+    jp cpm_list        ; 12 = Printer output
+    jp cpm_punch       ; 15 = Aux output
+    jp cpm_reader      ; 18 = Aux input
+    jp cpm_home        ; 21 = Disk track 0
+    jp cpm_seldsk      ; 24 = Disk drive
+    jp cpm_settrk      ; 27 = Disk track
+    jp cpm_setsec      ; 30 = Disk sector
+    jp cpm_setdma      ; 33 = Disk DMA address
+    jp cpm_read        ; 36 = Disk read sector
+    jp cpm_write       ; 39 = Disk write sector
+    jp cpm_listst      ; 42 = Status of printer
+    jp cpm_sectran     ; 45 = Disk sector translation     
+
+; Strings / Constants
+str_bios: defb "ZISA-X BIOS 1.0.0 Copyright (c) 2024, Synthetic Dreams LLC\r\n\r\n", 0
+str_boot: defb "Booting from A: drive...\r\n", 0
+str_noboot: defb "Boot failure\r\n\r\n", 0
+str_floppyerr: defb "Error initializing floppy controller\r\n", 0
+str_nvram_corrupt: defb "NVRAM corrupt, reverting to default settings\r\n\r\n", 0
+str_warm: defb "Warm\r\n", 0
+stri0: defb "0", 0
+stri1: defb "1", 0
+
+keyboard_lookup_0:
+    ;    0    1    2    3    4    5    6    7    8    9    A    B    C    D    E    F
+    defb $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, "\t","`", $00  ; 0
+    defb $00, $00, $00, $00, $00, "q", "1", $00, $00, $00, "z", "s", "a", "w", "2", $00  ; 1
+    defb $00, "c", "x", "d", "e", "4", "3", $00, $00, " ", "v", "f", "t", "r", "5", $00  ; 2
+    defb $00, "n", "b", "h", "g", "y", "6", $00, $00, $00, "m", "j", "u", "7", "8", $00  ; 3
+    defb $00, ",", "k", "i", "o", "0", "9", $00, $00, ".", "/", "l", ";", "p", "-", $00  ; 4
+    defb $00, $00, "'", $00, "[", "=", $00, $00, $00, $00, "\r","]", $00, "\\",$00, $00  ; 5
+    defb $00, $00, $00, $00, $00, $00, $08, $00, $00, "1", $00, "4", "7", $00, $00, $00  ; 6
+    defb "0", ".", "2", "5", "6", "8", $1B, $00, $00, "+", "3", "-", "*", "9", $00, $00  ; 7
+
+keyboard_lookup_1:
+    ;    0    1    2    3    4    5    6    7    8    9    A    B    C    D    E    F
+    defb $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, "\t","~", $00  ; 0
+    defb $00, $00, $00, $00, $00, "Q", "!", $00, $00, $00, "Z", "S", "A", "W", "@", $00  ; 1
+    defb $00, "C", "X", "D", "E", "$", "#", $00, $00, " ", "V", "F", "T", "R", "%", $00  ; 2
+    defb $00, "N", "B", "H", "G", "Y", "^", $00, $00, $00, "M", "J", "U", "&", "*", $00  ; 3
+    defb $00, "<", "K", "I", "O", ")", "(", $00, $00, ">", "?", "L", ":", "P", "_", $00  ; 4
+    defb $00, $00, "\"",$00, "{", "+", $00, $00, $00, $00, "\r","}", $00, "|", $00, $00  ; 5
+    defb $00, $00, $00, $00, $00, $00, $08, $00, $00, "1", $00, "4", "7", $00, $00, $00  ; 6
+    defb "0", ".", "2", "5", "6", "8", $1B, $00, $00, "+", "3", "-", "*", "9", $00, $00  ; 7
+    
+cpm_floppy_params: ; 2 heads, 40 tracks, 32 sectors per track (64 logical sectors per track across heads), 128 bytes per sector, 1024K blocks
+    dw DRIVE_SECTORS  ; SPT - Sectors per track
+    db 4              ; BSH - Block shift (4,15=2K)
+    db 15             ; BLM - Block mask (4,15=2K)
+    db 1              ; EXM - Extent mask
+    dw 155            ; DSM - Number of blocks - 1
+    dw 63             ; DRM - Number of dir entries - 1
+    db $80            ; AL0 - Dir allocation bitmap 0
+    db $00            ; AL1 - Dir allocation bitmap 1
+    dw 16             ; CKS - Checksum size (dir entries / 4)
+    dw 1              ; OFF - Track offset 
+ 
+cpm_dph_0: dw $0000, $0000, $0000, $0000, cpm_dir_buf, cpm_floppy_params, cpm_floppy_check_0, cpm_floppy_alloc_0
+cpm_dph_1: dw $0000, $0000, $0000, $0000, cpm_dir_buf, cpm_floppy_params, cpm_floppy_check_1, cpm_floppy_alloc_1
+cpm_dph_2: dw $0000, $0000, $0000, $0000, cpm_dir_buf, cpm_floppy_params, cpm_floppy_check_2, cpm_floppy_alloc_2
+cpm_dph_3: dw $0000, $0000, $0000, $0000, cpm_dir_buf, cpm_floppy_params, cpm_floppy_check_3, cpm_floppy_alloc_3
+
+; Variables
+system_module_idx: ds 1
+system_user_stack: ds 2
+system_console_stack: ds 2
+ctc_tick: ds 1
+keyboard_buf: ds 1
+keyboard_lshift: ds 1
+keyboard_rshift: ds 1
+keyboard_caps: ds 1
+keyboard_lctrl: ds 1
+keyboard_rctrl: ds 1
+floppy_startup_ctr: ds 1
+floppy_refresh_ctr: ds 4
+floppy_drive: ds 1
+floppy_head: ds 1
+floppy_track: ds 1
+floppy_sector: ds 1
+floppy_log_sector_cache: ds 1
+floppy_booted_drive: ds 1
+video_cursor_abs: ds 2
+video_attr: ds 1
+cpm_dir_buf: ds 128
+cpm_floppy_check_0: ds 16
+cpm_floppy_check_1: ds 16
+cpm_floppy_check_2: ds 16
+cpm_floppy_check_3: ds 16
+cpm_floppy_alloc_0: ds 39
+cpm_floppy_alloc_1: ds 39
+cpm_floppy_alloc_2: ds 39
+cpm_floppy_alloc_3: ds 39
+cpm_dma_ptr: ds 2
+
+; BIOS settings variables
+settings_video_attr: ds 1
+settings_boot_pri: ds 1
+settings_boot_sec: ds 1
+
+; ***** ISR Start *****
+; RST $08 - Hardware Interrupt 0 (module callback)
+rst1:
+    INT_START
+    ; Always increment timer
+    call ctc_timer_callback
+
+    ld d, 0
+    call rst_module_callback
+    cp 0
+    jp nz, _rst1_1
+    call floppy_timer_callback
+    _rst1_1:
+    INT_END
+    
+    reti
+
+; RST $10 - Hardware Interrupt 1 (module callback)
+rst2:
+    INT_START
+    ld d, 1
+    call rst_module_callback
+    INT_END
+    reti
+
+; RST $18 - Hardware Interrupt 2 (module callback)
+rst3:
+    INT_START
+    ld d, 2
+    call rst_module_callback
+    INT_END
+    reti
+
+; RST $20 - Hardware Interrupt 3 (module callback)
+rst4:
+    INT_START
+    ld d, 3
+    call rst_module_callback
+    INT_END
+    reti
+
+; RST $28 - System function dispatcher (module callback)
+rst5:
+    ld d, 4
+    push bc
+    push hl
+    call rst_module_callback
+    ld d, c
+    pop hl
+    pop bc
+    cp 0
+    jp nz, _rst5_1
+    call system_dispatcher
+    ret
+
+    _rst5_1:
+    ld a, d
+    ret
+
+; RST $30 - System function dispatcher (no module callback)
+rst6:
+    call system_dispatcher
+    ret
+
+; RST $38 - Debugger (no module callback)
+rst7:
+    ret
+
+; Relay int/rst call to registered modules (D = RST ID)
+rst_module_callback:
+    ; Save passed arguments
+    push bc
+    push hl
+    push de
+
+    ; Get number of registered modules (e = counter)
+    call system_module_count
+    ld e, a
+    push de
+
+    _rst_module_callback_1s:
+        xor a
+        cp e
+        jp z, _rst_module_callback_1e
+
+        ; Record current RAM bank (d = original bank)
+        call mmu_get_bank
+        pop de
+        ld d, a
+        push de
+
+        ; Relay call to module
+        ld a, 32
+        sub e
+        ld b, a
+        call mmu_set_bank
+
+        ; Reload parameters (temporarily store de counter/bank in af)
+        pop af
+        pop de
+        pop hl
+        pop bc
+        push bc
+        push hl
+        push de
+        push af
+        
+        ; Call appropriate callback function in module for given RST ID
+        ld a, d
+        cp 0
+        jp nz, $+9
+        call $0100
+        jp _rst_module_callback_2
+        cp 1
+        jp nz, $+9
+        call $0103
+        jp _rst_module_callback_2
+        cp 2
+        jp nz, $+9
+        call $0106
+        jp _rst_module_callback_2
+        cp 3
+        jp nz, $+9
+        call $0109
+        jp _rst_module_callback_2
+        cp 4
+        jp nz, _rst_module_callback_2
+        call $010C
+
+        _rst_module_callback_2:
+        
+        ; Put counter/bank back into de
+        pop de
+        push de
+
+        ; Temporarily save block status and return value while ram bank is stored
+        push af
+        push bc
+
+        ; Restore RAM bank
+        ld b, d
+        call mmu_set_bank
+        
+        ; Check if module blocked relaying further callbacks
+        pop bc
+        pop af
+        cp 0
+        jp z, _rst_module_callback_3
+        jp _rst_module_callback_4
+        
+        _rst_module_callback_3:
+
+        pop de
+        push de
+        dec e
+        jp _rst_module_callback_1s
+        
+    _rst_module_callback_1e:
+
+    ; Allow further callbacks
+    xor a
+    pop de ; Discard counter/bank
+    pop de
+    pop hl
+    pop bc
+    ret
+
+    ; Block further callbacks
+    _rst_module_callback_4:
+    ld a, c
+    pop de ; Discard counter/bank
+    pop de
+    pop hl
+    pop bc
+    ld c, a
+    ld a, 1
+    ret
+
+; ***** ISR End *****
+
+; ***** System Start *****
+
+; System Function Dispatcher (E = function)
+system_dispatcher:
+    ld a, e
+    ; System 0x00 - 16
+
+    ; 0x00 - system_cold_boot
+    cp $00
+    jp nz, _system_dispatcher_00_e
+    jp system_cold_boot
+    _system_dispatcher_00_e:
+
+    ; 0x01 - system_warm_boot
+    cp $01
+    jp nz, _system_dispatcher_01_e
+    jp system_warm_boot
+    _system_dispatcher_01_e:
+    
+    ; 0x02 - system_run_high
+    cp $02
+    jp nz, _system_dispatcher_02_e
+    call system_run_high
+    ret
+    _system_dispatcher_02_e:
+
+    ; 0x03 - system_module_register
+    cp $03
+    jp nz, _system_dispatcher_03_e
+    call system_module_register
+    ret
+    _system_dispatcher_03_e:
+
+    ; 0x04 - system_module_count
+    cp $04
+    jp nz, _system_dispatcher_04_e
+    call system_module_count
+    ret
+    _system_dispatcher_04_e:
+
+    ; 0x05 - system_wait_tick:
+    cp $05
+    jp nz, _system_dispatcher_05_e
+    call ctc_wait
+    ret
+    _system_dispatcher_05_e:
+
+    ; 0x06 - system_load_settings:
+    cp $06
+    jp nz, _system_dispatcher_06_e
+    call system_load_settings
+    ret
+    _system_dispatcher_06_e:
+
+    ; 0x07 - system_save_settings:
+    cp $07
+    jp nz, _system_dispatcher_07_e
+    call system_save_settings
+    ret
+    _system_dispatcher_07_e:
+
+    ; 0x08 - system_get_settings:
+    cp $08
+    jp nz, _system_dispatcher_08_e
+    call system_get_settings
+    ret
+    _system_dispatcher_08_e:
+
+    ; MMU 0x10 - 16
+
+    ; 0x10 - mmu_get_mapped
+    cp $10
+    jp nz, _system_dispatcher_10_e
+    call mmu_get_mapped
+    ret
+    _system_dispatcher_10_e:
+
+    ; 0x11 - mmu_set_mapped
+    cp $11
+    jp nz, _system_dispatcher_11_e
+    call mmu_set_mapped
+    ret
+    _system_dispatcher_11_e:
+
+    ; 0x12 - mmu_get_mode
+    cp $12
+    jp nz, _system_dispatcher_12_e
+    call mmu_get_mode
+    ret
+    _system_dispatcher_12_e:
+
+    ; 0x13 - mmu_set_mode
+    cp $13
+    jp nz, _system_dispatcher_13_e
+    call mmu_set_mode
+    ret
+    _system_dispatcher_13_e:
+
+    ; 0x14 - mmu_get_bank
+    cp $14
+    jp nz, _system_dispatcher_14_e
+    call mmu_get_bank
+    ret
+    _system_dispatcher_14_e:
+
+    ; 0x15 - mmu_set_bank
+    cp $15
+    jp nz, _system_dispatcher_15_e
+    call mmu_set_bank
+    ret
+    _system_dispatcher_15_e:
+
+    ; 0x16 - mmu_get_iobank
+    cp $16
+    jp nz, _system_dispatcher_16_e
+    call mmu_get_iobank
+    ret
+    _system_dispatcher_16_e:
+
+    ; 0x17 - mmu_set_iobank
+    cp $17
+    jp nz, _system_dispatcher_17_e
+    call mmu_set_iobank
+    ret
+    _system_dispatcher_17_e:
+
+    ; Video 0x20 - 32
+
+    ; 0x20 - video_set_cursor_pos
+    cp $20
+    jp nz, _system_dispatcher_20_e
+    call video_set_cursor_pos
+    ret
+    _system_dispatcher_20_e:
+
+    ; 0x21 - video_get_cursor_pos
+    cp $21
+    jp nz, _system_dispatcher_21_e
+    call video_get_cursor_pos
+    ret
+    _system_dispatcher_21_e:
+
+    ; 0x22 - video_cursor_up
+    cp $22
+    jp nz, _system_dispatcher_22_e
+    call video_cursor_up
+    ret
+    _system_dispatcher_22_e:
+
+    ; 0x23 - video_cursor_down
+    cp $23
+    jp nz, _system_dispatcher_23_e
+    call video_cursor_down
+    ret
+    _system_dispatcher_23_e:
+
+    ; 0x24 - video_cursor_left
+    cp $24
+    jp nz, _system_dispatcher_24_e
+    call video_cursor_left
+    ret
+    _system_dispatcher_24_e:
+
+    ; 0x25 - video_cursor_right
+    cp $25
+    jp nz, _system_dispatcher_25_e
+    call video_cursor_right
+    ret
+    _system_dispatcher_25_e:
+
+    ; 0x26 - video_cursor_return
+    cp $26
+    jp nz, _system_dispatcher_26_e
+    call video_cursor_return
+    ret
+    _system_dispatcher_26_e:
+
+    ; 0x27 - video_cursor_end
+    cp $27
+    jp nz, _system_dispatcher_27_e
+    call video_cursor_end
+    ret
+    _system_dispatcher_27_e:
+
+    ; 0x28 - video_clear_screen
+    cp $28
+    jp nz, _system_dispatcher_28_e
+    call video_clear_screen
+    ret
+    _system_dispatcher_28_e:
+
+    ; 0x29 - video_delete_row
+    cp $29
+    jp nz, _system_dispatcher_29_e
+    call video_delete_row
+    ret
+    _system_dispatcher_29_e:
+
+    ; 0x2A - video_insert_row
+    cp $2A
+    jp nz, _system_dispatcher_2A_e
+    call video_insert_row
+    ret
+    _system_dispatcher_2A_e:
+
+    ; 0x2B - video_clear_eol
+    cp $2B
+    jp nz, _system_dispatcher_2B_e
+    call video_clear_eol
+    ret
+    _system_dispatcher_2B_e:
+
+    ; 0x2C - video_clear_eos
+    cp $2C
+    jp nz, _system_dispatcher_2C_e
+    call video_clear_eos
+    ret
+    _system_dispatcher_2C_e:
+
+    ; 0x2D - video_set_char
+    cp $2D
+    jp nz, _system_dispatcher_2D_e
+    call video_set_char
+    ret
+    _system_dispatcher_2D_e:
+
+    ; 0x2E - video_print_char
+    cp $2E
+    jp nz, _system_dispatcher_2E_e
+    call video_print_char
+    ret
+    _system_dispatcher_2E_e:
+
+    ; 0x2F - video_print_str
+    cp $2F
+    jp nz, _system_dispatcher_2F_e
+    call video_print_str
+    ret
+    _system_dispatcher_2F_e:
+
+    ; 0x30 - video_hardware_cursor
+    cp $30
+    jp nz, _system_dispatcher_30_e
+    call video_hardware_cursor
+    ret
+    _system_dispatcher_30_e:
+
+    ; 0x31 - video_set_attribute
+    cp $31
+    jp nz, _system_dispatcher_31_e
+    call video_set_attribute
+    ret
+    _system_dispatcher_31_e:
+
+    ; Keyboard 0x40 - 16
+
+    ; 0x40 - keyboard_get_key
+    cp $40
+    jp nz, _system_dispatcher_40_e
+    call keyboard_get_key
+    ret
+    _system_dispatcher_40_e:
+
+    ; 0x41 - keyboard_avail_key
+    cp $41
+    jp nz, _system_dispatcher_41_e
+    call keyboard_avail_key
+    ret
+    _system_dispatcher_41_e:
+
+    ; Floppy 0x50 - 16
+
+    ; 0x50 - floppy_reset
+    cp $50
+    jp nz, _system_dispatcher_50_e
+    call floppy_reset
+    ret
+    _system_dispatcher_50_e:
+
+    ; 0x51 - floppy_set_drive
+    cp $51
+    jp nz, _system_dispatcher_51_e
+    call floppy_set_drive
+    ret
+    _system_dispatcher_51_e:
+
+    ; 0x52 - floppy_drive_recalibrate
+    cp $52
+    jp nz, _system_dispatcher_52_e
+    call floppy_drive_recalibrate
+    ret
+    _system_dispatcher_52_e:
+
+    ; 0x53 - floppy_set_head
+    cp $53
+    jp nz, _system_dispatcher_53_e
+    call floppy_set_head
+    ret
+    _system_dispatcher_53_e:
+
+    ; 0x54 - floppy_set_track
+    cp $54
+    jp nz, _system_dispatcher_54_e
+    call floppy_set_track
+    ret
+    _system_dispatcher_54_e:
+
+    ; 0x55 - floppy_set_sector
+    cp $55
+    jp nz, _system_dispatcher_55_e
+    call floppy_set_sector
+    ret
+    _system_dispatcher_55_e:
+
+    ; 0x56 - floppy_set_log_sector
+    cp $56
+    jp nz, _system_dispatcher_56_e
+    call floppy_set_log_sector
+    ret
+    _system_dispatcher_56_e:
+
+    ; 0x57 - floppy_read
+    cp $57
+    jp nz, _system_dispatcher_57_e
+    call floppy_read
+    ret
+    _system_dispatcher_57_e:
+
+    ; 0x58 - floppy_write
+    cp $58
+    jp nz, _system_dispatcher_58_e
+    call floppy_write
+    ret
+    _system_dispatcher_58_e:
+
+    ; 0x59 - floppy_boot
+    cp $59
+    jp nz, _system_dispatcher_59_e
+    call floppy_boot
+    ret
+    _system_dispatcher_59_e:
+
+    ; Serial 0x60 - 16
+
+    ret
+
+; Intialize system, install boot program, and execute
+system_cold_boot:
+    ; Reposition startup stack
+    ld sp, ADDR_STACK_STARTUP
+
+    ; Activate RAM bank 0
+    ld b, 1
+    call mmu_set_mode
+    ld b, 0
+    call mmu_set_bank
+
+    ; Turn on page 0, upper, and video overlay
+    ld b, MMU_MAPPED_PAGE0 | MMU_MAPPED_UPPER | MMU_MAPPED_VIDEO
+    call mmu_set_mapped
+
+    ; Set IO bank to CGA/EGA/VGA text frame buffer
+    ld b, $B8
+    call mmu_set_iobank
+
+    ; Setup page 0
+
+    ; JMP to BIOS/Warm Boot
+    ld ix, $0000
+    ld (ix+0), $c3
+    ld (ix+1), WBOOT_START & $FF
+    ld (ix+2), WBOOT_START >> 8
+
+    ; IO and DSK byte
+    ld (ix+3), $00
+    ld (ix+4), $00
+
+    ; JMP to BDOS
+    ld (ix+5), $c3
+    ld (ix+6), ADDR_BDOS & $FF
+    ld (ix+7), ADDR_BDOS >> 8
+
+    ; RST vectors
+    ld ix, ADDR_RST
+    ld (ix+$08), $c3
+    ld (ix+$10), $c3
+    ld (ix+$18), $c3
+    ld (ix+$20), $c3
+    ld (ix+$28), $c3
+    ld (ix+$30), $c3
+    ld (ix+$38), $c3
+
+    ld hl, rst1
+    ld (ADDR_RST + $09), hl
+    ld hl, rst2
+    ld (ADDR_RST + $11), hl
+    ld hl, rst3
+    ld (ADDR_RST + $19), hl
+    ld hl, rst4
+    ld (ADDR_RST + $21), hl
+    ld hl, rst5
+    ld (ADDR_RST + $29), hl
+    ld hl, rst6
+    ld (ADDR_RST + $31), hl
+    ld hl, rst7
+    ld (ADDR_RST + $39), hl
+
+    ; Interrupt jump table
+    ld hl, ADDR_RST + $08
+    ld (ADDR_INTJUMP + $00), hl
+    ld hl, ADDR_RST + $10
+    ld (ADDR_INTJUMP + $02), hl
+    ld hl, ADDR_RST + $18
+    ld (ADDR_INTJUMP + $04), hl
+    ld hl, ADDR_RST + $20
+    ld (ADDR_INTJUMP + $06), hl
+    ld hl, ADDR_RST + $28
+    ld (ADDR_INTJUMP + $08), hl
+    ld hl, ADDR_RST + $30
+    ld (ADDR_INTJUMP + $0A), hl
+    ld hl, ADDR_RST + $38
+    ld (ADDR_INTJUMP + $0C), hl
+
+    ; Set interrupt mode
+    im 2
+
+    ; Load BIOS settings
+    call system_load_settings
+    push af
+
+    ; Initialize screen
+    ld a, (settings_video_attr)
+    ld b, a
+    call video_set_attribute
+    call video_clear_screen
+    ld bc, str_bios
+    call video_print_str
+    pop af
+    cp 0
+    jp z, _system_cold_boot_1
+    call system_save_settings
+    ld bc, str_nvram_corrupt
+    call video_print_str
+
+    ; Enable timer and interrupts
+    _system_cold_boot_1:
+    call ctc_init
+    ei
+
+    ; Load console
+    _system_cold_boot_console:
+    ld b, 0
+    call mmu_set_mode
+    ld b, 1
+    call mmu_set_bank
+    call $0100
+    ld b, 1
+    call mmu_set_mode
+    ld b, 0
+    call mmu_set_bank
+
+    ; Initialize floppy controller
+    call floppy_reset
+    cp 0
+    jp z, _system_cold_boot_pri
+    ld bc, str_floppyerr
+    call video_print_str
+    jp _system_cold_boot_console
+
+    ; Attempt to primary boot
+    _system_cold_boot_pri:
+    ld a, (settings_boot_pri)
+    cp $FF
+    jp z, _system_cold_boot_sec
+    ld b, a
+    ld c, 0
+    call floppy_boot
+
+    ; Attempt to secondary boot
+    _system_cold_boot_sec:
+    ld a, (settings_boot_sec)
+    cp $FF
+    jp z, _system_cold_boot_fail
+    ld b, a
+    ld c, 0
+    call floppy_boot
+
+    ; Failure booting off either disk, wait for key and try again
+    _system_cold_boot_fail:
+    ld bc, str_noboot
+    call video_print_str
+    ld a, $FF
+    ld ($0004), a
+    jp _system_cold_boot_console
+
+; Reinstall and execute boot program from disk
+system_warm_boot:
+    ; Reposition startup stack
+    ld sp, ADDR_STACK_STARTUP
+
+    ld bc, str_warm
+    call video_print_str
+
+    ; Execute from previous boot drive
+    ld a, (floppy_booted_drive)
+    ld b, a
+    ld c, 1
+    call floppy_boot
+
+; Move and run a program at $8000 (HL = Start, BC = Size)
+system_run_high:
+    ld de, $8000
+    ldir
+    call $8000
+    ret
+
+; Register module [A = Error code]
+system_module_register:
+    ; Verify slot is available
+    call system_module_count
+    cp 30
+    jp c,_system_module_register_1
+    
+    ; All slots used
+    ld a, $FF
+    ret
+
+    ; Register module in slot 
+    _system_module_register_1:
+    call system_module_count
+    inc a
+    ld (hl), a
+    ret
+
+; Get number of modules registered [A = count]
+system_module_count:
+    ld hl, system_module_idx
+    ld a, (hl)
+    ret
+
+; Save settings
+system_save_settings:
+    ; Save current mode/bank
+    call mmu_get_mode
+    ld d, a
+    push de
+    call mmu_get_bank
+    pop de
+    ld e, a
+    push de
+
+    ; Settings are stored in NVRAM bank 0, page 1
+    ld b, 3
+    call mmu_set_mode
+    ld b, 0
+    call mmu_set_bank
+
+    ; Save settings
+    ld a, (settings_video_attr)
+    ld ($0101), a
+    ld a, (settings_boot_pri)
+    ld ($0102), a
+    ld a, (settings_boot_sec)
+    ld ($0103), a
+
+    ; Calculate and store checksum
+    ld hl, $0101
+    ld bc, 3
+    call utils_checksum
+    ld ($0100), a
+
+    ; Restore mode/bank
+    pop de
+    push de
+    ld b, d
+    call mmu_set_mode
+    pop de
+    ld b, e
+    call mmu_set_bank
+
+    ret
+
+; Load settings [A = checksum invalid]
+system_load_settings:
+    ; Save current mode/bank
+    call mmu_get_mode
+    ld d, a
+    push de
+    call mmu_get_bank
+    pop de
+    ld e, a
+    push de
+
+    ; Settings are stored in NVRAM bank 0, page 1
+    ld b, 3
+    call mmu_set_mode
+    ld b, 0
+    call mmu_set_bank
+
+    ; Verify checksum
+    ld hl, $0101
+    ld bc, 3
+    call utils_checksum
+    ld b, a
+    ld a, ($0100)
+    cp b
+    jp z, _system_load_settings_valid
+
+    ; Checksum invalid
+    ld a, 1
+    push af
+    jp _system_load_settings_end
+
+    ; Checksum valid
+    _system_load_settings_valid:
+    xor a
+    push af
+    ld a, ($0101)
+    ld (settings_video_attr), a
+    ld a, ($0102)
+    ld (settings_boot_pri), a
+    ld a, ($0103)
+    ld (settings_boot_sec), a
+    
+    ; Restore mode/bank
+    _system_load_settings_end:
+    pop af
+    pop de
+    push af
+    push de
+    ld b, d
+    call mmu_set_mode
+    pop de
+    ld b, e
+    call mmu_set_bank
+
+    pop af
+    ret
+
+; Get settings [HL = settings address]
+system_get_settings:
+    ld hl, settings_video_attr
+    ret 
+
+; ***** System End *****
+
+; ***** MMU Start *****
+; Get mapped regions [A = regions]
+mmu_get_mapped:
+    ld bc, PORT_MAPPED
+    in a, (c)
+    ret
+
+; Set mapped regions (B = regions)
+mmu_set_mapped:
+    ld d, b
+    ld bc, PORT_MAPPED
+    out (c), d
+    ret
+
+; Get mode [A = mode]
+mmu_get_mode:
+    ld bc, PORT_MODE
+    in a, (c)
+    ret
+
+; Set mode (B = mode)
+mmu_set_mode:
+    ld d, b
+    ld bc, PORT_MODE
+    out (c), d
+    ret
+
+; Get bank [A = bank]
+mmu_get_bank:
+    ld bc, PORT_BANK
+    in a, (c)
+    ret
+
+; Set bank (B = bank)
+mmu_set_bank:
+    ld d, b
+    ld bc, PORT_BANK
+    out (c), d
+    ret
+
+; Get IO bank [A = bank]
+mmu_get_iobank:
+    ld bc, PORT_IOBANK
+    in a, (c)
+    ret
+
+; Set IO bank (B = bank)
+mmu_set_iobank:
+    ld d, b
+    ld bc, PORT_IOBANK
+    out (c), d
+    ret
+
+; ***** MMU End *****
+
+; ***** CTC Start *****
+
+; Initialize CTC
+ctc_init:
+    ; Set interrupt vector base 
+    ld bc, PORT_CTC 
+    ld a, ADDR_INTJUMP & $FF
+    out (c), a
+
+    ; Setup channel 0 as timer of 256 * 135 cycles (5ms @ 7Mhz)
+    ld a, %10100111
+    out (c), a
+    ; ld a, 135
+    ld a, 1
+    out (c), a
+
+    ; Setup channels 1-3 as interrupts
+    ld bc, PORT_CTC + 1
+    ld a, %11111111
+    out (c), a
+    ld a, $01
+    out (c), a
+
+    ld bc, PORT_CTC + 2
+    ld a, %11111111
+    out (c), a
+    ld a, $01
+    out (c), a
+
+    ld bc, PORT_CTC + 3
+    ld a, %11111111
+    out (c), a
+    ld a, $01
+    out (c), a
+
+    ret
+
+; Increment timer counter
+ctc_timer_callback:
+    ld hl, ctc_tick
+    ld a, (hl)
+    inc a
+    ld (hl), a
+    ret
+
+; Wait until next timer tick
+ctc_wait:
+    ld hl, ctc_tick
+    ld a, (hl)
+    ld b, a
+
+    _ctc_wait_1:
+    ld a, (hl)
+    cp b
+    jp z, _ctc_wait_1
+        
+    ret
+
+; ***** CTC End *****
+
+; ***** Video Start *****
+; Set cursor position (B = x, C = y)
+video_set_cursor_pos:
+    ; Check bounds
+    ld a, b
+    cp VIDEO_COLS
+    jp nc, _video_set_cursor_pos_1
+
+    ld a, c
+    cp VIDEO_ROWS
+    jp nc, _video_set_cursor_pos_1
+
+    ; Set x offset
+    ld h, $00
+    ld l, b
+    
+    ; Set y offset
+    _video_set_cursor_pos_1s:
+        xor a
+        cp c
+        jp z, _video_set_cursor_pos_1e
+
+        ld de, VIDEO_COLS
+        add hl, de
+
+        dec c
+        jp _video_set_cursor_pos_1s
+    _video_set_cursor_pos_1e:
+
+    ; Update absolute position and hardware
+    ld (video_cursor_abs), hl
+    call video_hardware_cursor
+
+    _video_set_cursor_pos_1:
+
+    ret
+
+; Get cursor position [A = x, B = y]
+video_get_cursor_pos:
+    ld hl, (video_cursor_abs)
+    ld c, VIDEO_COLS
+    call div_hl_c
+    ld b, l
+    ret
+
+; Move cursor up
+video_cursor_up:
+    call video_get_cursor_pos
+    ld a, 0
+    cp b
+    jp nz, _video_cursor_up_1
+        ; Cursor on top row
+        ret
+
+    _video_cursor_up_1:
+        ; Cursor not on top row
+        ld hl, (video_cursor_abs)
+        ld de, VIDEO_COLS
+        sbc hl, de
+        ld (video_cursor_abs), hl
+        call video_hardware_cursor
+        ret
+
+; Move cursor down
+video_cursor_down:
+    call video_get_cursor_pos
+    ld a, VIDEO_ROWS - 1
+    cp b
+    jp nz, _video_cursor_down_1
+        ; Cursor on bottom row, scroll
+        ld b, 0
+        call video_delete_row
+        ret
+
+    _video_cursor_down_1:
+        ; Cursor not on bottom row
+        ld hl, (video_cursor_abs)
+        ld de, VIDEO_COLS
+        add hl, de
+        ld (video_cursor_abs), hl
+        call video_hardware_cursor
+        ret
+
+; Move cursor left [A = Success]
+video_cursor_left:
+    ld hl, (video_cursor_abs)
+    xor a
+    cp h
+    jp nz, _video_cursor_left_1
+    xor a
+    cp l
+    jp nz, _video_cursor_left_1
+        ; Cursor == 0
+        xor a
+        ret
+    _video_cursor_left_1:
+        ; Cursor > 0
+        xor a
+        ld bc, $0001
+        sbc hl, bc
+        ld (video_cursor_abs), hl
+        call video_hardware_cursor
+        ld a, 1
+        ret
+
+; Move cursor right
+video_cursor_right:
+    ld hl, (video_cursor_abs)
+    ld bc, $0001
+    add hl, bc
+    ld (video_cursor_abs), hl
+
+    ; Check if scrolling necessary
+    ld a, (VIDEO_COLS * VIDEO_ROWS >> 8) & $FF ;$07
+    cp h
+    jp nz, _video_cursor_right_1
+    ld a, (VIDEO_COLS * VIDEO_ROWS) & $FF ;$D0
+    cp l
+    jp nz, _video_cursor_right_1
+        ; Cursor off screen, scroll
+        ld b, 0
+        call video_delete_row
+        ld bc, VIDEO_COLS * (VIDEO_ROWS - 1)
+        ld (video_cursor_abs), bc
+    _video_cursor_right_1:
+    call video_hardware_cursor
+    ret
+
+; Move cursor to start of line
+video_cursor_return:
+    call video_get_cursor_pos
+    ld hl, (video_cursor_abs)
+    ld c, a
+    ld b, $00
+    xor a
+    sbc hl, bc
+    ld (video_cursor_abs), hl
+    call video_hardware_cursor
+    ret
+
+; Move cursor to end of line
+video_cursor_end:
+    call video_get_cursor_pos
+    ld hl, (video_cursor_abs)
+    ld c, a
+    ld a, VIDEO_COLS
+    sub c
+    ld c, a
+    ld b, $00
+    xor a
+    add hl, bc
+    ld (video_cursor_abs), hl
+    call video_hardware_cursor
+    ret
+
+; Clear screen and attributes
+video_clear_screen:
+    ld hl, video_attr
+    ld a, (hl)
+    ld c, a
+    ld b, 0
+    ld de, 2000
+    ld hl, ADDR_VIDEO
+
+    _video_clear_screen_1s:
+        xor a
+        cp d
+        jp nz, _video_clear_screen_2
+        cp e
+        jp nz, _video_clear_screen_2
+        jp _video_clear_screen_1e
+
+        _video_clear_screen_2: 
+        ld (hl), b
+        inc hl
+        ld (hl), c
+        inc hl
+        dec de
+        jp _video_clear_screen_1s
+    _video_clear_screen_1e:
+
+    ret
+
+; Delete row and move rows up (B = row)
+video_delete_row:
+    ld hl, ADDR_VIDEO
+
+    _video_delete_row_1s:
+        xor a
+        cp b
+        jp z, _video_delete_row_1e
+
+        ld de, VIDEO_COLS * 2
+        add hl, de
+        dec b
+        jp _video_delete_row_1s
+    _video_delete_row_1e:
+
+    ld d, h
+    ld e, l
+    ld bc, VIDEO_COLS * 2
+    add hl, bc
+
+    ld a, (video_attr)
+    ld b, a
+
+    _video_delete_row_2s:
+        ; Stop at last position in frame buffer
+        ld a, (ADDR_VIDEO + (VIDEO_COLS * VIDEO_ROWS * 2) >> 8) & $FF  ;0xFF
+        cp h 
+        jp nz, _video_delete_row_3
+        ld a, (ADDR_VIDEO + (VIDEO_COLS * VIDEO_ROWS * 2)) & $FF ;0xA0
+        cp l
+        jp nz, _video_delete_row_3
+        jp _video_delete_row_2e
+
+        _video_delete_row_3:
+
+        ; Copy current character to previous line
+        ld a, (hl)
+        ld (de), a
+
+        ; Erase from current line
+        ld a, l
+        and $01
+        cp 1
+        jp z, _video_delete_row_erase_odd
+        xor a
+        ld (hl), a
+        jp _video_delete_row_erase_done
+        _video_delete_row_erase_odd:
+        ld (hl), b
+        _video_delete_row_erase_done:
+
+        inc de
+        inc hl
+        jp _video_delete_row_2s
+    _video_delete_row_2e:
+
+    ret
+
+; Insert row and move rows down (B = row)
+video_insert_row:
+    ld hl, ADDR_VIDEO
+
+    _video_insert_row_1s:
+        xor a
+        cp b
+        jp z, _video_insert_row_1e
+
+        ld de, VIDEO_COLS * 2
+        add hl, de
+        dec b
+        jp _video_insert_row_1s
+    _video_insert_row_1e:
+    xor a
+    ld de, 1
+    sbc hl, de
+    push hl
+
+    ld hl, ADDR_VIDEO + (VIDEO_COLS * (VIDEO_ROWS - 1) * 2) - 1
+    ld de, ADDR_VIDEO + (VIDEO_COLS * VIDEO_ROWS * 2) - 1
+
+    _video_insert_row_2s:
+        ; Stop when calculated position is reached
+        pop bc
+        push bc
+        
+        ld a, b
+        cp h 
+        jp nz, _video_insert_row_3
+        ld a, c
+        cp l
+        jp nz, _video_insert_row_3
+        jp _video_insert_row_2e
+
+        _video_insert_row_3:
+
+        ; Copy current line (HL) to line below (DE)
+        ld a, (hl)
+        ld (de), a
+
+        ; Erase from current line
+        ld a, l
+        and $01
+        cp 1
+        jp z, _video_insert_row_erase_odd
+        xor a
+        ld (hl), a
+        jp _video_insert_row_erase_done
+        _video_insert_row_erase_odd:
+        ld a, (video_attr)
+        ld (hl), a
+        _video_insert_row_erase_done:
+
+        dec de
+        dec hl
+        jp _video_insert_row_2s
+    _video_insert_row_2e:
+
+    pop bc
+    ret
+
+; Clear to end of line
+video_clear_eol:
+    ; Get number of characters to clear
+    call video_get_cursor_pos
+    ld c, a
+    ld a, VIDEO_COLS
+    sub c
+    ld b, a
+
+    ld hl, ADDR_VIDEO
+    ld de, (video_cursor_abs) 
+    add hl, de
+    add hl, de
+
+    _video_clear_eol_1s:
+        xor a
+        cp b
+        jp z, _video_clear_eol_1e
+
+        ld (hl), 0
+        inc hl
+        ld a, (video_attr)
+        ld (hl), a
+        inc hl
+        dec b
+        jp _video_clear_eol_1s
+    _video_clear_eol_1e:
+
+    ret
+
+; Clear to end of screen
+video_clear_eos:
+    ld hl, ADDR_VIDEO
+    ld de, (video_cursor_abs) 
+    add hl, de
+    add hl, de
+
+    ld de, ADDR_VIDEO + (VIDEO_COLS * VIDEO_ROWS * 2)
+
+    _video_clear_eos_1s:
+        ld a, d
+        cp h 
+        jp nz, _video_clear_eos_2
+        ld a, e
+        cp l
+        jp nz, _video_clear_eos_2
+        jp _video_clear_eos_1e
+
+        _video_clear_eos_2:
+        
+        ld (hl), 0
+        inc hl
+        ld a, (video_attr)
+        ld (hl), a
+        inc hl
+        jp _video_clear_eos_1s
+    _video_clear_eos_1e:
+
+    ret
+
+; Set char at cursor position (B = char)
+video_set_char:
+    ; Get cursor position in frame buffer
+    ld hl, ADDR_VIDEO
+    ld de, (video_cursor_abs)
+    add hl, de
+    add hl, de
+
+    ; Set character
+    ld de, video_attr
+    ld a, (de)
+    ld (hl), b
+    inc hl
+    ld (hl), a
+
+    ret
+
+; Set/clear char at cursor position, update position (B = char)
+video_print_char:
+    ; 0x0A (Line Feed)
+    ld a, $0A
+    cp b
+    jp nz, _video_print_char_lf_end
+        call video_cursor_down
+        ret
+    _video_print_char_lf_end:
+
+    ; 0x0D (Carriage Return)
+    ld a, $0D
+    cp b
+    jp nz, _video_print_char_cr_end
+        call video_cursor_return
+        ret
+    _video_print_char_cr_end:
+
+    ; 0x08 (Backspace)
+    ld a, $08
+    cp b
+    jp nz, _video_print_char_bs_end
+        ; Move cursor to left and erase if success
+        call video_cursor_left
+        cp 0
+        jp z, _video_print_char_bs_1
+            ; Success
+            ld b, 0
+            call video_set_char
+        _video_print_char_bs_1:
+            ret
+    _video_print_char_bs_end:
+
+    ; Normal print - set character and advance cursor
+    call video_set_char
+    call video_cursor_right
+
+    ret
+
+; Print null-terminated string at current position and update position (BC = string)
+video_print_str:
+    ld h, b
+    ld l, c
+
+    _video_print_str_1s:
+    ld b, (hl)
+    xor a
+    cp b
+    jp z, _video_print_str_1e
+    
+    push hl
+    call video_print_char
+    pop hl
+    inc hl
+    jp _video_print_str_1s
+
+    _video_print_str_1e:
+
+    ret
+
+; Update hardware cursor
+video_hardware_cursor:
+    ld de, (video_cursor_abs)
+
+    ld a, $0F
+    ld bc, PORT_CGA + 4
+    out (c), a
+
+    ld a, e
+    ld bc, PORT_CGA + 5
+    out (c), a
+
+    ld a, $0E
+    ld bc, PORT_CGA + 4
+    out (c), a
+
+    ld a, d
+    ld bc, PORT_CGA + 5
+    out (c), a
+    
+    ret
+
+; Set activate video attribute (B = attribute)
+video_set_attribute:
+    ld hl, video_attr
+    ld (hl), b
+    ret
+
+; ***** Video End *****
+
+; ***** Keyboard Start *****
+
+; Get key with clear (B = Blocking) [A = key]
+keyboard_get_key:
+    ; Fetch from buffer first
+    ld hl, keyboard_buf
+    ld a, (hl)
+    ld c, 0
+    ld (hl), c
+    cp 0
+    ret nz
+
+    ; Fetch from controller if buffer empty
+    ld e, b
+    call keyboard_fetch
+    ret
+
+; Get key with no clear (B = Blocking) [A = key]
+keyboard_avail_key:
+    ; Fetch from buffer first
+    ld a, (keyboard_buf)
+    cp 0
+    ret nz
+
+    ; Fetch from controller if buffer empty
+    ld e, b
+    call keyboard_fetch
+    ld (keyboard_buf), a
+    ret
+    
+; Fetch byte from keyboard controller, lookup and store if requested (E = Block) [A = key]
+keyboard_fetch:
+    ; Primary fetch
+    ld bc, PORT_KEYBOARD + 0
+    in a, (c)
+
+    ; If no byte avail during primary fetch and set to blocking, retry
+    cp 0
+    jp nz, _keyboard_fetch_f0
+    xor a
+    cp e
+    jp nz, keyboard_fetch
+    ret
+
+    ; Check for F0 blocking fetch
+    _keyboard_fetch_f0:
+    ld d, 0
+    cp $F0
+    jp nz, _keyboard_fetch_e0
+    _keyboard_fetch_f0_loop:
+        in a, (c)
+        cp 0
+        jp z, _keyboard_fetch_f0_loop
+    ld d, 1
+
+    ; Check for E0 blocking fetch
+    _keyboard_fetch_e0:
+    cp $E0
+    jp nz, _keyboard_fetch_check
+    _keyboard_fetch_e0_loop:
+        in a, (c)
+        cp 0
+        jp z, _keyboard_fetch_e0_loop
+    ld b, $FF
+
+    ; Check if F0 mode
+    _keyboard_fetch_check:
+    ld c, a
+    xor a
+    cp d
+    jp z, _keyboard_fetch_lookup
+    
+    ; F0 mode process modifier keys
+    ld a, c
+    cp $12
+    jp z, _keyboard_fetch_lshift_up
+    cp $59
+    jp z, _keyboard_fetch_rshift_up
+    cp $14
+    jp z, _keyboard_fetch_lctrl_up
+    and b
+    cp $14
+    jp z, _keyboard_fetch_rctrl_up
+
+    ; Repeat if blocking, return 0 if non-blocking
+    xor a
+    cp e
+    jp nz, keyboard_fetch 
+    ret
+    
+    ; Process modifiers
+    _keyboard_fetch_lookup:
+    ld a, c
+    cp $12
+    jp z, _keyboard_fetch_lshift_down
+    cp $59
+    jp z, _keyboard_fetch_rshift_down
+    cp $58
+    jp z, _keyboard_fetch_caps_down
+    cp $14
+    jp z, _keyboard_fetch_lctrl_down
+    and b
+    cp $14
+    jp z, _keyboard_fetch_rctrl_down
+
+    ; Select lookup 0 by default
+    ld hl, keyboard_lookup_0
+    
+    ; Select lookup 1 for shift
+    ld a, (keyboard_lshift)
+    ld d, a
+    ld a, (keyboard_rshift)
+    ld e, a
+    ld a, (keyboard_caps)
+    ld b, a
+    xor a
+    or d
+    or e
+    or b
+    cp 0
+    jp z, _keyboard_fetch_lookup_2
+    ld hl, keyboard_lookup_1
+
+    ; Perform lookup
+    _keyboard_fetch_lookup_2:
+    ld b, 0
+    add hl, bc
+    ld a, (hl)
+
+    ; Apply ctrl if applicable by subtracting "A" value from lookup ASCII value
+    ld b, a
+    ld a, (keyboard_lctrl)
+    ld d, a
+    ld a, (keyboard_rctrl)
+    ld e, a
+    xor a
+    or d
+    or e
+    cp 0
+    ld a, b
+    jp z, _keyboard_fetch_done
+    ld b, 0
+    sbc hl, bc
+    ld c, $1C
+    add hl, bc
+    ld b, (hl)
+    sub b
+    add 1
+    
+    _keyboard_fetch_done:
+    ret
+
+    _keyboard_fetch_lshift_down:
+    ld a, 1
+    ld (keyboard_lshift), a
+    jp _keyboard_fetch_mod_done
+
+    _keyboard_fetch_rshift_down:
+    ld a, 1
+    ld (keyboard_rshift), a
+    jp _keyboard_fetch_mod_done
+
+    _keyboard_fetch_caps_down:
+    ld a, (keyboard_caps)
+    xor $01
+    ld (keyboard_caps), a
+    jp _keyboard_fetch_mod_done
+
+    _keyboard_fetch_lctrl_down:
+    ld a, 1
+    ld (keyboard_lctrl), a
+    jp _keyboard_fetch_mod_done
+
+    _keyboard_fetch_rctrl_down:
+    ld a, 1
+    ld (keyboard_rctrl), a
+    jp _keyboard_fetch_mod_done
+
+    _keyboard_fetch_lshift_up:
+    xor a
+    ld (keyboard_lshift), a
+    jp _keyboard_fetch_mod_done
+
+    _keyboard_fetch_rshift_up:
+    xor a
+    ld (keyboard_rshift), a
+    jp _keyboard_fetch_mod_done
+
+    _keyboard_fetch_lctrl_up:
+    xor a
+    ld (keyboard_lctrl), a
+    jp _keyboard_fetch_mod_done
+
+    _keyboard_fetch_rctrl_up:
+    xor a
+    ld (keyboard_rctrl), a
+    jp _keyboard_fetch_mod_done
+    
+    ; Repeat if blocking, return 0 if non-blocking
+    _keyboard_fetch_mod_done:
+    xor a
+    cp e
+    jp nz, keyboard_fetch
+    ret
+
+; ***** Keyboard End *****
+
+; ***** Floppy Start *****
+
+; Timer callback for counters
+floppy_timer_callback:
+    ; Startup counter
+    ld hl, floppy_startup_ctr
+    ld a, (hl)
+    cp 0
+    jp z, _floppy_timer_callback_refresh
+    dec a
+    ld (hl), a
+
+    ; Refresh counters (note deactivated motors in register value as we go)
+    _floppy_timer_callback_refresh:
+    ld a, (floppy_drive)
+    or $F4
+    ld e, a
+
+    _floppy_timer_callback_refresh0:
+        ld hl, floppy_refresh_ctr + 0
+        ld a, (hl)
+        cp $FF
+        jp z, _floppy_timer_callback_refresh1
+        cp 0
+        jp z, _floppy_timer_callback_refresh0_off
+        dec a
+        ld (hl), a
+        cp 0
+        jp nz, _floppy_timer_callback_refresh1
+    _floppy_timer_callback_refresh0_off:
+        ld a, e
+        and $EF
+        ld e, a
+
+    _floppy_timer_callback_refresh1:
+        ld hl, floppy_refresh_ctr + 1
+        ld a, (hl)
+        cp $FF
+        jp z, _floppy_timer_callback_refresh2
+        cp 0
+        jp z, _floppy_timer_callback_refresh1_off
+        dec a
+        ld (hl), a
+        cp 0
+        jp nz, _floppy_timer_callback_refresh2
+    _floppy_timer_callback_refresh1_off:
+        ld a, e
+        and $DF
+        ld e, a
+
+    _floppy_timer_callback_refresh2:
+        ld hl, floppy_refresh_ctr + 2
+        ld a, (hl)
+        cp $FF
+        jp z, _floppy_timer_callback_refresh3
+        cp 0
+        jp z, _floppy_timer_callback_refresh2_off
+        dec a
+        ld (hl), a
+        cp 0
+        jp nz, _floppy_timer_callback_refresh3
+    _floppy_timer_callback_refresh2_off:
+        ld a, e
+        and $BF
+        ld e, a
+
+    _floppy_timer_callback_refresh3:
+        ld hl, floppy_refresh_ctr + 3
+        ld a, (hl)
+        cp $FF
+        jp z, _floppy_timer_callback_refresh4
+        cp 0
+        jp z, _floppy_timer_callback_refresh3_off
+        dec a
+        ld (hl), a
+        cp 0
+        jp nz, _floppy_timer_callback_refresh4
+    _floppy_timer_callback_refresh3_off:
+        ld a, e
+        and $7F
+        ld e, a
+
+    _floppy_timer_callback_refresh4:
+    ld bc, PORT_FDC_DOR
+    ld a, e
+    out (c), a
+    ret
+
+; Wait until FIFO ready for read
+floppy_wait_fifo_read:
+    ld e, $C0
+    jp floppy_wait_fifo
+
+; Wait until FIFO ready for write
+floppy_wait_fifo_write:
+    ld e, $80
+    jp floppy_wait_fifo
+
+; Wait until FIFO ready
+floppy_wait_fifo:
+    ld bc, PORT_FDC_MSR
+
+    ld d, FLOPPY_RETRY
+    _floppy_wait_fifo_1s: 
+        in a, (c)
+        and e
+        cp e
+        jp z, _floppy_wait_fifo_success
+        dec d
+        xor a
+        cp d
+        jp z, _floppy_wait_fifo_1e
+        jp _floppy_wait_fifo_1s
+    _floppy_wait_fifo_1e:
+
+    ; Failure
+    ld a, 1
+    ret
+
+    ; Success
+    _floppy_wait_fifo_success:
+    xor a
+    ret
+
+; Activate/continue selected drive motor
+floppy_motor_on:
+    ld hl, floppy_drive
+    ld e, (hl)
+
+    ; Set counter as on ($FF) and set select/motor for drive
+    ld d, $FF
+    ld bc, PORT_FDC_DOR
+
+    xor a
+    cp e
+    jp nz, _floppy_motor_on_check1
+        ld hl, floppy_refresh_ctr + 0
+        ld (hl), d
+        in a, (c)
+        push af
+        and $10
+        ld e, a
+        pop af
+        or $10
+        out (c), a
+    jp _floppy_motor_on_check_done
+
+    _floppy_motor_on_check1:
+    ld a, 1
+    cp e
+    jp nz, _floppy_motor_on_check2
+        ld hl, floppy_refresh_ctr + 1
+        ld (hl), d
+        in a, (c)
+        push af
+        and $20
+        ld e, a
+        pop af
+        or $20
+        out (c), a
+    jp _floppy_motor_on_check_done
+
+    _floppy_motor_on_check2:
+    ld a, 2
+    cp e
+    jp nz, _floppy_motor_on_check3
+        ld hl, floppy_refresh_ctr + 2
+        ld (hl), d
+        in a, (c)
+        push af
+        and $40
+        ld e, a
+        pop af
+        or $40
+        out (c), a
+    jp _floppy_motor_on_check_done
+
+    _floppy_motor_on_check3:
+    ld a, 3
+    cp e
+    jp nz, _floppy_motor_on_check_done
+        ld hl, floppy_refresh_ctr + 3
+        ld (hl), d
+        in a, (c)
+        push af
+        and $80
+        ld e, a
+        pop af
+        or $80
+        out (c), a
+
+    _floppy_motor_on_check_done:
+    ld a, e
+    cp 0
+    jp nz, _floppy_motor_on_end
+    
+    ; Motor was off, wait for startup delay
+    ld hl, floppy_startup_ctr
+    ld a, FLOPPY_MOTOR_STARTUP
+    ld (hl), a
+    
+    _floppy_motor_on_delay_s:
+        ld a, (hl)
+        ld b, a
+        xor a
+        cp b
+        jp z, _floppy_motor_on_delay_e
+        jp _floppy_motor_on_delay_s
+    _floppy_motor_on_delay_e:
+
+    _floppy_motor_on_end:
+
+    ret
+
+; Start shutdown on selected drive motor
+floppy_motor_off:
+    ld hl, floppy_drive
+    ld e, (hl)
+
+    ; Set shutdown counter 
+    ld d, FLOPPY_MOTOR_SHUTDOWN
+    ld bc, PORT_FDC_DOR
+
+    xor a
+    cp e
+    jp nz, _floppy_motor_off_check1
+        ld hl, floppy_refresh_ctr + 0
+        ld e, (hl)
+        ld a, $FF
+        cp e
+        jp nz, _floppy_motor_off_check_done
+        ld (hl), d
+    jp _floppy_motor_off_check_done
+
+    _floppy_motor_off_check1:
+    ld a, 1
+    cp e
+    jp nz, _floppy_motor_off_check2
+        ld hl, floppy_refresh_ctr + 1
+        ld e, (hl)
+        ld a, $FF
+        cp e
+        jp nz, _floppy_motor_off_check_done
+        ld (hl), d
+    jp _floppy_motor_off_check_done
+
+    _floppy_motor_off_check2:
+    ld a, 2
+    cp e
+    jp nz, _floppy_motor_off_check3
+        ld hl, floppy_refresh_ctr + 2
+        ld e, (hl)
+        ld a, $FF
+        cp e
+        jp nz, _floppy_motor_off_check_done
+        ld (hl), d
+    jp _floppy_motor_off_check_done
+
+    _floppy_motor_off_check3:
+    ld a, 3
+    cp e
+    jp nz, _floppy_motor_off_check_done
+        ld hl, floppy_refresh_ctr + 3
+        ld e, (hl)
+        ld a, $FF
+        cp e
+        jp nz, _floppy_motor_off_check_done
+        ld (hl), d
+    _floppy_motor_off_check_done:
+
+    ret
+
+; Reset FDC [A = success]
+floppy_reset:
+    ; Reset controller
+    ld a, $80
+    ld bc, PORT_FDC_DSR
+    out (c), a
+
+    ; Configure controller: EIS=1, EFIFO=0, POLL=0, FIFOTHR=10, PRETREK=0
+    FLOPPY_WAIT_FIFO_WRITE _floppy_reset_fail
+    ld bc, PORT_FDC_FIFO
+    ld a, $13
+    out (c), a
+
+    FLOPPY_WAIT_FIFO_WRITE _floppy_reset_fail
+    ld bc, PORT_FDC_FIFO
+    ld a, $00
+    out (c), a
+
+    FLOPPY_WAIT_FIFO_WRITE _floppy_reset_fail
+    ld bc, PORT_FDC_FIFO
+    ld a, $4A
+    out (c), a
+
+    FLOPPY_WAIT_FIFO_WRITE _floppy_reset_fail
+    ld bc, PORT_FDC_FIFO
+    ld a, $00
+    out (c), a
+
+    ; Success
+    xor a
+    ret
+
+    ; Failure
+    _floppy_reset_fail:
+    ld a, 1
+    ret
+
+; Set drive (B = drive) [A = success]
+floppy_set_drive:
+    ld hl, floppy_drive
+    ld (hl), b
+
+    push bc
+    ; Configure drive timings: SRT=0, HUT=0, HLT=0, ND=1
+    FLOPPY_WAIT_FIFO_WRITE _floppy_set_drive_fail
+    ld bc, PORT_FDC_FIFO
+    ld a, $03
+    out (c), a
+    
+    FLOPPY_WAIT_FIFO_WRITE _floppy_set_drive_fail
+    ld bc, PORT_FDC_FIFO
+    ld a, $00
+    out (c), a
+
+    FLOPPY_WAIT_FIFO_WRITE _floppy_set_drive_fail
+    ld bc, PORT_FDC_FIFO
+    ld a, $21
+    out (c), a
+    pop bc
+
+    ; Recalibrate drive (will select drive and turn on motor)
+    call floppy_drive_recalibrate
+    cp 0
+    jp nz, _floppy_set_drive_fail
+
+    ; Read the first sector
+    ld hl, cpm_dir_buf
+    call floppy_read
+    cp 0
+    jp nz, _floppy_set_drive_fail
+
+    ; Success
+    xor a
+    ret
+
+    ; Failure
+    _floppy_set_drive_fail:
+    ld a, 1
+    ret
+
+; Recalibrate selected drive
+floppy_drive_recalibrate:
+    ; Turn on motor
+    call floppy_motor_on
+
+    ; Recalibrate
+    FLOPPY_WAIT_FIFO_WRITE _floppy_drive_recalibrate_fail
+    ld bc, PORT_FDC_FIFO
+    ld a, $07
+    out (c), a
+    
+    FLOPPY_WAIT_FIFO_WRITE _floppy_drive_recalibrate_fail
+    ld bc, PORT_FDC_FIFO
+    ld hl, floppy_drive
+    ld a, (hl)
+    out (c), a
+
+    ; Success
+    call floppy_motor_off
+    xor a
+    ret
+
+    ; Failure
+    _floppy_drive_recalibrate_fail:
+    call floppy_motor_off
+    ld a, 1
+    ret
+
+; Set active head (B = head)
+floppy_set_head:
+    ld hl, floppy_head
+    ld (hl), b
+    ret
+
+; Set active track (B = track)
+floppy_set_track:
+    ld hl, floppy_track
+    ld (hl), b
+    ret
+
+; Set active sector (B = sector)
+floppy_set_sector:
+    ld hl, floppy_sector
+    ld (hl), b
+    ret
+
+; Select active logical sector (B = sector)
+floppy_set_log_sector:
+    push bc
+
+    ; Cache the logical sector
+    ld a, b
+    ld (floppy_log_sector_cache), a
+
+    ; Head 0: Sectors < 32, Head 1: Sectors >= 32
+    and $20
+    srl a
+    srl a
+    srl a
+    srl a
+    srl a
+    ld b, a
+    call floppy_set_head
+    pop bc
+
+    ; Sector % 32
+    ld a, b
+    and $1F
+
+    ; Real sectors start at 1
+    inc a
+    ld b, a
+    call floppy_set_sector
+
+    ret
+
+; Read sector (HL = buffer address)
+floppy_read:
+    push hl
+    call floppy_motor_on
+    pop hl
+
+    di
+    ld b, 5
+    _floppy_read_1s:
+        xor a
+        cp b
+        jp z, _floppy_read_1e
+
+        push hl
+        push bc
+        call floppy_read_single
+        pop bc
+        pop hl
+
+        ; Check for success
+        cp 0
+        jp z, _floppy_read_success
+
+        ; Check for controller/unexpected failure
+        cp 1
+        jp z, _floppy_read_1e
+
+        ; Otherwise read failure, try again
+        dec b
+        jp _floppy_read_1s
+    _floppy_read_1e:
+
+    ; Failure
+    ei
+    call floppy_motor_off
+    ld a, 1
+    ret
+
+    ; Success
+    _floppy_read_success:
+    ei
+    call floppy_motor_off
+    xor a
+    ret
+
+; Read sector single operation (HL = buffer address)
+floppy_read_single:
+    push hl
+
+    ; Command phase start - command
+    FLOPPY_WAIT_FIFO_WRITE _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, $46
+    out (c), a
+
+    ; Head/Drive
+    FLOPPY_WAIT_FIFO_WRITE _floppy_read_single_fail1
+    ld a, (floppy_head)
+    ld b, a
+    sla b
+    sla b
+    ld a, (floppy_drive)
+    add b
+    ld bc, PORT_FDC_FIFO
+    out (c), a
+
+    ; Track (C)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, (floppy_track)
+    out (c), a
+
+    ; Head (H)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, (floppy_head)
+    out (c), a
+
+    ; Sector (R)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, (floppy_sector)
+    out (c), a
+
+    ; Sector size (N 0=128/special)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    xor a
+    out (c), a
+
+    ; End sector (EOT)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, (floppy_sector)
+    out (c), a
+
+    ; Gap length (GPL)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, FLOPPY_GPL
+    out (c), a
+
+    ; Special sector size (DTL)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, $80
+    out (c), a
+
+    ; Execution phase - loop until NON-DMA reset
+    _floppy_read_single_execution_1s:
+        ; Check if NON-DMA is set
+        FLOPPY_WAIT_FIFO_READ _floppy_read_single_fail1
+        ld bc, PORT_FDC_MSR
+        in a, (c)
+        and $20
+        cp 0
+        jp z, _floppy_read_single_execution_1e
+
+        ; Read byte
+        ld bc, PORT_FDC_FIFO
+        in a, (c)
+        pop hl
+        ld (hl), a
+        inc hl
+        push hl
+        jp _floppy_read_single_execution_1s
+
+    _floppy_read_single_execution_1e:
+
+    ; Result phase start - ST 0
+    FLOPPY_WAIT_FIFO_READ _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    and $C0
+    ld e, a
+    push de
+
+    ; Remaining 6 bytes
+    FLOPPY_WAIT_FIFO_READ _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_read_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+
+    ; Check read status
+    pop de
+    xor a
+    cp e
+    jp nz, _floppy_read_single_fail2
+ 
+    ; Success
+    pop hl
+    xor a
+    ret
+
+    ; General failure
+    _floppy_read_single_fail1:
+    pop hl
+    ld a, 1
+    ret
+
+    ; Read failure
+    _floppy_read_single_fail2:
+    pop hl
+    ld a, 2
+    ret
+
+; Write sector (HL = buffer address)
+floppy_write:
+    di
+    push hl
+    call floppy_motor_on
+    pop hl
+
+    ld b, 5
+    _floppy_write_1s:
+        xor a
+        cp b
+        jp z, _floppy_write_1e
+
+        push hl
+        push bc
+        call floppy_write_single
+        pop bc
+        pop hl
+
+        ; Check for success
+        cp 0
+        jp z, _floppy_write_success
+
+        ; Check for controller/unexpected failure
+        cp 1
+        jp z, _floppy_write_1e
+
+        ; Otherwise write failure, try again
+        dec b
+        jp _floppy_write_1s
+    _floppy_write_1e:
+
+    ; Failure
+    call floppy_motor_off
+    ei
+    ld a, 1
+    ret
+
+    ; Success
+    _floppy_write_success:
+    call floppy_motor_off
+    ei
+    xor a
+    ret
+
+; Write sector single operation (HL = buffer address)
+floppy_write_single:
+    push hl
+
+    ; Command phase start - command
+    FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, $45
+    out (c), a
+
+    ; Head/Drive
+    FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+    ld a, (floppy_head)
+    ld b, a
+    sla b
+    sla b
+    ld a, (floppy_drive)
+    add b
+    ld bc, PORT_FDC_FIFO
+    out (c), a
+
+    ; Track (C)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, (floppy_track)
+    out (c), a
+
+    ; Head (H)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, (floppy_head)
+    out (c), a
+
+    ; Sector (R)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, (floppy_sector)
+    out (c), a
+
+    ; Sector size (N 0=128/special)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    xor a
+    out (c), a
+
+    ; End sector (EOT)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, (floppy_sector)
+    out (c), a
+
+    ; Gap length (GPL)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, FLOPPY_GPL
+    out (c), a
+
+    ; Special sector size (DTL)
+    FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    ld a, $80
+    out (c), a
+
+    ; Execution phase - loop until NON-DMA reset
+    _floppy_write_single_execution_1s:
+        ; Check if NON-DMA is set
+        FLOPPY_WAIT_FIFO_WRITE _floppy_write_single_fail1
+        ld bc, PORT_FDC_MSR
+        in a, (c)
+        and $20
+        cp 0
+        jp z, _floppy_write_single_execution_1e
+
+        ; Write byte
+        pop hl
+        ld a, (hl)
+        inc hl
+        push hl
+        ld bc, PORT_FDC_FIFO
+        out (c), a
+        jp _floppy_write_single_execution_1s
+
+    _floppy_write_single_execution_1e:
+
+    ; Result phase start - ST 0
+    FLOPPY_WAIT_FIFO_READ _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    and $C0
+    ld e, a
+    push de
+
+    ; Remaining 6 bytes
+    FLOPPY_WAIT_FIFO_READ _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+    FLOPPY_WAIT_FIFO_READ _floppy_write_single_fail1
+    ld bc, PORT_FDC_FIFO
+    in a, (c)
+
+    ; Check write status
+    pop de
+    xor a
+    cp e
+    jp nz, _floppy_write_single_fail2
+ 
+    ; Success
+    pop hl
+    xor a
+    ret
+
+    ; General failure
+    _floppy_write_single_fail1:
+    pop hl
+    ld a, 1
+    ret
+
+    ; Write failure
+    _floppy_write_single_fail2:
+    pop hl
+    ld a, 2
+    ret
+
+; floppy_boot: Install and execute bootable disk (B = drive, C = argument) 
+
+; ZB|NUM_BLOCKS_COPY|DEST_ADDR|BOOT_ADDR|TYPE
+; Blocks are 256 bytes. Type 0: Generic, Type 1: CP/M 2.2
+_floppy_boot_buf: equ $0080
+_floppy_boot_magic: equ _floppy_boot_buf
+_floppy_boot_numblocks: equ _floppy_boot_buf + 2 ; (8-bit)
+_floppy_boot_dstaddr: equ _floppy_boot_buf + 3
+_floppy_boot_bootaddr: equ _floppy_boot_buf + 5
+_floppy_boot_type: equ _floppy_boot_buf + 7
+_floppy_boot_arg: ds 1
+
+floppy_boot:
+    ld a, c
+    ld (_floppy_boot_arg), a
+    call floppy_set_drive
+    cp 0
+    jp nz, _floppy_boot_fail
+
+    ; Read boot sector (reuse CPM directory buffer)
+    ld b, 0
+    call floppy_set_track
+    ld b, 0
+    call floppy_set_log_sector
+    ld hl, _floppy_boot_buf
+    call floppy_read
+
+    ; Check for valid boot record
+    ld bc, (_floppy_boot_magic)
+    ld a, "Z"
+    cp c
+    jp z, _floppy_boot_1
+    ret
+
+    _floppy_boot_1:
+    ld a, "B"
+    cp b
+    jp z, _floppy_boot_2
+    ret
+
+    ; Show boot message if cold boot
+    _floppy_boot_2:
+    ld a, (_floppy_boot_arg)
+    cp 1
+    jp z, _floppy_boot_copy
+    ld hl, str_boot
+    ld de, 13
+    add hl, de
+    ld a, (floppy_drive)
+    ld b, a
+    ld a, (hl)
+    add a, b
+    ld (hl), a
+    ld bc, str_boot
+    call video_print_str
+
+    _floppy_boot_copy:
+    ; Start reading at track 0 logical sector 1
+    ld b, 0
+    call floppy_set_track
+    ld b, 1
+    call floppy_set_log_sector
+
+    ; Set copy destination
+    ld hl, (_floppy_boot_dstaddr)
+
+    ; Copy data
+    ld a, (_floppy_boot_numblocks)
+    ld c, a
+
+    _floppy_boot_3s:
+        xor a
+        cp c
+        jp z, _floppy_boot_3e
+
+        ; Read and copy
+        push bc
+        push hl
+        call floppy_read
+        pop hl
+        pop bc
+
+        ; Advance memory
+        ld de, 128
+        add hl, de
+
+        ; Advance sector, adjust if end of track
+        push bc
+        push hl
+        ld a, (floppy_log_sector_cache)
+        inc a
+        ld b, a
+        call floppy_set_log_sector
+        ld b, DRIVE_SECTORS
+        cp b
+        jp nz, _floppy_boot_4
+        ld b, 0
+        call floppy_set_log_sector
+        ld a, (floppy_track)
+        inc a
+        ld b, a
+        call floppy_set_track
+
+        _floppy_boot_4:
+        ld a, (floppy_log_sector_cache)
+        pop hl
+        pop bc
+
+        ; Repeat process for second half of 256 byte block if sector even
+        ld a, (floppy_log_sector_cache)
+        and $01
+        cp 0
+        jp z, _floppy_boot_3s
+
+        dec c
+
+        jp _floppy_boot_3s
+    _floppy_boot_3e:
+
+    ; Note successful boot
+    ld a, (floppy_drive)
+    ld (floppy_booted_drive), a
+
+    ; Type specific processing
+    ld a, (_floppy_boot_type)
+    cp 1
+    jp z, _floppy_boot_type1
+    jp _floppy_boot_final
+
+    ; Type 1: CP/M (arg indicates warm boot, A = arg, C = starting drive)
+    _floppy_boot_type1:
+    ld bc, $0080
+    call cpm_setdma
+    ld a, ($0004)
+    ld c, a
+    ld a, (_floppy_boot_arg)
+    cp 1
+    jp z, _floppy_boot_final
+
+    ; For cold boot, set starting drive to boot drive
+    ld a, (floppy_drive)
+    ld c, a
+    xor a
+
+    ; Execute boot address
+    _floppy_boot_final:
+    ld hl, (_floppy_boot_bootaddr)
+    jp (hl)
+
+    _floppy_boot_fail:
+    ret
+
+; ***** Floppy End *****
+
+; ***** CP/M Start *****
+
+; Warm boot
+cpm_warm:
+    ld e, $01
+    rst $28
+    ret
+
+; Console status [A = status]
+cpm_const:
+    ld b, 0
+    ld e, $41
+    rst $28
+    ret
+
+; Console input [A = key]
+cpm_conin:
+    ld b, 1
+    ld e, $40
+    rst $28
+    ret
+
+; Console output (C = char)
+cpm_conout:
+    ld b, c
+    ld e, $2E
+    rst $28
+    ret
+
+; Printer output (C = char)
+cpm_list:
+    ret
+
+; Aux output (C = char)
+cpm_punch:
+    ret
+
+; Aux input [A = char]
+cpm_reader:
+    ; 0x26 indicates device not implemented
+    ld a, $26
+    ret
+
+; Move current disk drive to track 0
+cpm_home:
+    ld b, 0
+    ld e, $53
+    rst $28
+    ld b, 0
+    ld e, $54
+    rst $28
+    call floppy_set_track
+    ret
+
+; Select disk (C = disk, E = mode) [HL = DPH]
+cpm_seldsk:
+    ; Check for valid drive
+    ld a, DRIVE_LAST
+    cp c
+    jp nc, _cpm_seldsk_1
+    ld hl, $0000
+    ret
+
+    _cpm_seldsk_1:
+    ld b, c
+    push bc
+    ld e, $51
+    rst $28
+    pop bc
+
+    ; Check for valid disk
+    cp 0
+    jp nz, _cpm_seldsk_error
+
+    ; Return appropriate DPH
+    ld hl, cpm_dph_0
+    ld de, 16
+
+    _cpm_seldsk_2s:
+        xor a
+        cp c
+        jp z, _cpm_seldsk_2e
+        
+        add hl, de
+        dec c
+        jp _cpm_seldsk_2s     
+    _cpm_seldsk_2e:
+
+    ret
+
+    _cpm_seldsk_error:
+    ld hl, $0000
+    ld a, (floppy_booted_drive)
+    ld ($0004), a
+    ret
+
+; Select track (BC = track)
+cpm_settrk:
+    ld b, c
+    ld e, $54
+    rst $28
+    ret
+
+; Select sector (BC = sector)
+cpm_setsec:
+    ld b, c
+    ld e, $56
+    rst $28
+    ret
+
+; Set where disk data reads/writes to (BC = address) 
+cpm_setdma:
+    ld (cpm_dma_ptr), bc
+    ret
+
+; Read from disk [A = status]
+cpm_read:
+    ld hl, (cpm_dma_ptr)
+    ld e, $57
+    rst $28
+    ret
+
+; Write to disk (C = mode)
+cpm_write:
+    ld hl, (cpm_dma_ptr)
+    ld e, $58
+    rst $28
+    ret
+
+; Get printer status (A = status)
+cpm_listst:
+    ld a, 0
+    ret
+
+; Get sector number translation (BC = logical sector, DE = translation table) [HL = physical sector]
+cpm_sectran:
+    ld h, b
+    ld l, c
+    ret
+
+; ***** CP/M End *****
+
+; ***** Utils Start *****
+
+; checksum (HL = address, BC = number of bytes) [A = checksum]
+utils_checksum:
+    ld e, 0
+    _checksum_1s:
+        xor a
+        cp c
+        jp nz, _checksum_2
+        cp b
+        jp nz, _checksum_2
+        jp _checksum_1e
+
+        _checksum_2:
+        ld a, (hl)
+        xor e
+        ld e, a
+        inc hl
+        dec bc
+        jp _checksum_1s
+    _checksum_1e:
+
+    ld a, e
+    ret
+
+; 16/8 Division (HL / C) [HL = quotient, A = remainder]
+div_hl_c:
+   xor  a
+   ld   b, 16
+
+    _div_hl_c_1:
+   add  hl, hl
+   rla
+   jr   c, $+5
+   cp   c
+   jr   c, $+4
+
+   sub  c
+   inc  l
+   
+   djnz _div_hl_c_1
+   ret
+; ***** Utils End *****
+
+BIOS_END:

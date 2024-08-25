@@ -1,0 +1,432 @@
+include "zisax.z80"
+
+org $100
+
+STACK: equ $C000
+BDOS: equ $0005
+FCB: equ $005C
+ARGS: equ $0080
+MODULE_CONFIG: equ $010F
+MODULE_DESC: equ $0120
+MODULE_FILE: equ $0160
+MODULE_EXEC: equ $0200
+
+main:
+    ld (orig_sp), sp
+    ld sp, STACK
+    ld a, (ARGS)
+    cp 3
+    jp nz, _main_1
+    ld a, (ARGS+2)
+    cp '/'
+    jp nz, _main_1
+    ld a, (ARGS+3)
+    cp '?'
+    jp nz, _main_1
+        ; Help mode, list usage
+        call usage
+        ld sp, (orig_sp)
+        ret
+
+    _main_1:
+    ; Parse arguments
+    ld d, 0
+    ld a, (ARGS)
+    cp 0
+    jp z, _main_start
+
+    ld a, (ARGS + 2)
+    cp '/'
+    jp nz, _main_invalid
+    ld d, 1
+    ld a, (ARGS + 3)
+    cp 'L'
+    jp z, _main_start
+    cp 'l'
+    jp z, _main_start
+    ld d, 2
+    cp 'C'
+    jp z, _main_start
+    cp 'c'
+    jp z, _main_start
+    jp _main_invalid
+    
+    _main_start:
+    ; Load program into high memory
+    ld a, d
+    ld (mode), a
+    ld hl, HIGH_START
+    ld bc, HIGH_END - main_high
+    SYSTEM_RUN_HIGH
+    ld sp, (orig_sp)
+    ret
+
+    _main_invalid:
+    ; Invalid arguments
+    ld bc, invalid_str
+    VIDEO_PRINT_STR
+    call usage
+    ld sp, (orig_sp)
+    ret
+
+usage:
+    ld bc, usage_str
+    VIDEO_PRINT_STR
+    ret
+
+usage_str: defb "ZISA-X Module Manager\r\n\r\nSyntax: MODULE [/L file(s)] [/C file]\r\n              Show loaded modules\r\n  /L          Specify module to load\r\n  /C          Configure module\r\n  /?          Display this help message\r\n\r\n", 0
+invalid_str: defb "Error: Invalid arguments\r\n\r\n", 0
+
+orig_sp: ds 2
+mode: ds 1
+
+HIGH_START:
+org $8000
+
+;(Stack 1 = mode - 0=Status, 1=Load, 2=Config)
+main_high:
+    ld a, (mode)
+    ld d, a
+
+    ; Mode 0 - report module status
+    xor a
+    cp d
+    jp z, _main_high_status
+
+    ; Mode 1 - load module
+    ld a, 1
+    cp d
+    jp z, _main_high_load
+
+    ; Mode 2 - config module
+    ld a, 2
+    cp d
+    jp z, _main_high_config
+
+    _main_high_status:
+    call status
+    ret
+
+    _main_high_load:
+    call load_module
+    ret
+
+    _main_high_config:
+    call config_module
+    ret
+
+load_module:
+    ; Setup FCB to check/load module
+    call setup_fcb
+
+    ; Ensure available module slot (30 modules max, must not clobber lowest 64K)
+    SYSTEM_MODULE_COUNT
+    cp 30
+    jp nz, _load_module_1
+        ; No slots available
+        ret
+
+    ; Check if module already registered and loaded
+    _load_module_1:
+    ld b, a
+    push bc
+    call module_registered
+    pop bc
+    cp $FF
+    jp z, _load_module_2
+
+    ; Module already loaded
+    ld bc, loaded_str
+    VIDEO_PRINT_STR
+    ret
+
+    _load_module_2:
+
+    ; Module not loaded, load new module's RAM bank
+    call load_module_bank
+
+    ; Open module
+    ld c, $0F
+    ld de, FCB
+    call BDOS
+    cp $FF
+    jp nz, _load_module_3
+
+    ; Invalid file name
+    ld bc, notfound_str
+    VIDEO_PRINT_STR
+    ld b, 0
+    MMU_SET_BANK
+    ret
+
+    ; Copy module to memory
+    _load_module_3:
+
+    ld hl, MODULE_EXEC
+
+    _load_module_4s:
+        ld c, $1A
+        ld d, h
+        ld e, l
+        push hl
+        call BDOS
+        pop hl
+
+        ld c, $14
+        ld de, FCB
+        push hl
+        call BDOS
+        pop hl
+
+        cp $0
+        jp nz, _load_module_4e
+        ld de, 128
+        add hl, de
+        jp _load_module_4s
+
+    _load_module_4e:
+
+    ; Initialize module
+    call MODULE_EXEC
+
+    ; Write filename to header
+    ld hl, FCB + 1
+    ld de, MODULE_FILE
+    ld bc, 8
+    ldir
+
+    ; Restore RAM bank
+    ld b, 0
+    MMU_SET_BANK
+
+    ; Register module
+    SYSTEM_MODULE_REGISTER
+
+    ret
+
+config_module:
+    ; Setup FCB to check/load module
+    call setup_fcb
+
+    ; Check if module registered
+    SYSTEM_MODULE_COUNT
+    ld b, a
+    call module_registered
+    cp $FF
+    jp nz, _config_module_1
+        ld bc, notloaded_str
+        VIDEO_PRINT_STR
+        ret
+
+    _config_module_1:
+    ld b, a
+    call load_module_bank
+    call MODULE_CONFIG
+
+    ; Restore RAM bank
+    ld b, 0
+    MMU_SET_BANK
+
+    ret
+
+; Report which modules loaded
+_status_intstr: ds 6
+status:
+    SYSTEM_MODULE_COUNT
+    cp 0
+    jp nz, _status_1
+        ; No modules loaded
+        ld bc, nomodules_str
+        VIDEO_PRINT_STR
+        ret
+    _status_1:
+        ; Modules loaded, enumerate
+        push af
+        ld bc, status_str
+        VIDEO_PRINT_STR
+        pop af
+
+        ld c, a
+        ld b, 0
+        _status_2s:
+            ld a, c
+            cp b
+            jp z, _status_2e
+
+            ; Get module header
+            push bc
+            call load_module_bank
+            pop bc
+
+            ; Print description
+            push bc
+            ld c, b
+            ld b, 0
+            ld hl, _status_intstr
+            call itoa
+            ld bc, _status_intstr
+            inc bc
+            inc bc
+            inc bc
+            VIDEO_PRINT_STR
+            ld bc, delim_str
+            VIDEO_PRINT_STR
+            ld bc, MODULE_DESC
+            VIDEO_PRINT_STR
+            ld bc, crlf_str
+            VIDEO_PRINT_STR
+            pop bc
+
+            inc b
+            jp _status_2s
+        _status_2e:
+
+        ; Reset RAM bank
+        ld b, 0
+        MMU_SET_BANK
+
+        ret
+
+; Setup FCB with file
+setup_fcb:
+    ld ix, FCB
+    ld (ix+0), $00
+    ld (ix+1), $20
+    ld (ix+2), $20
+    ld (ix+3), $20
+    ld (ix+4), $20
+    ld (ix+5), $20
+    ld (ix+6), $20
+    ld (ix+7), $20
+    ld (ix+8), $20
+    ld (ix+9), "D"
+    ld (ix+10), "R"
+    ld (ix+11), "V"
+    ld (ix+12), $00
+    ld (ix+13), $00
+    ld (ix+14), $00
+    ld (ix+15), $00
+
+    ; Load module filename into FCB
+    ld hl, ARGS + 5
+    ld de, FCB + 1
+    ld b, 0
+    ld a, (ARGS)
+    dec a
+    dec a
+    dec a
+    dec a
+    ld c, a
+    ldir
+
+; Load the module's RAM bank (B = module ID)
+load_module_bank:
+    ld a, 31
+    sub a, b
+    ld b, a
+    MMU_SET_BANK
+    ret
+
+; Check if module is already registered in slot (B = number of modules to check) [A = slot]
+module_registered:
+    _module_registered_1s:
+        xor a
+        cp b
+        jp z, _module_registered_1e
+
+        dec b
+
+        ; Load bank for potential module and check filename match
+        push bc
+        call load_module_bank
+        call name_match
+        pop bc
+        cp 0
+        jp z, _module_registered_1s
+
+        ; Filename matched
+        ld a, b
+        push af
+        jp _module_registered_2
+    _module_registered_1e:
+    
+    ; Filename didn't match
+    ld a, $FF
+    push af
+
+    _module_registered_2:
+    ld b, 0
+    MMU_SET_BANK
+    pop af
+    ret
+
+; Checks if active module filename matches argument filename
+name_match:
+    ld hl, FCB + 1
+    ld de, MODULE_FILE
+
+    ld b, 0 
+    _name_match_1s:
+        ld a, 8
+        cp b
+        jp z, _name_match_1e
+
+        ld a, (de)
+        cp (hl)
+        jp z, _name_match_2
+        
+        ; Names don't match
+        xor a
+        ret
+
+        _name_match_2:
+        inc hl
+        inc de
+        inc b
+        jp _name_match_1s
+    _name_match_1e:
+
+    ld a, 1
+    ret
+
+; itoa (BC = integer, HL = 6 byte buffer address)                                                                                                                                                                                                                                                                           
+itoa:                                                                                                                                                                                                                                                                                                                 
+    ld d, h                                                                                                                                                                                                                                                                                                                 
+    ld e, l                                                                                                                                                                                                                                                                                                                 
+    ld h, b                                                                                                                                                                                                                                                                                                                 
+    ld l, c                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                                                                                            
+    ld bc, -10000                                                                                                                                                                                                                                                                                                           
+    call _itoa_1                                                                                                                                                                                                                                                                                                            
+    ld bc, -1000                                                                                                                                                                                                                                                                                                            
+    call _itoa_1                                                                                                                                                                                                                                                                                                            
+    ld bc, -100                                                                                                                                                                                                                                                                                                             
+    call _itoa_1                                                                                                                                                                                                                                                                                                            
+    ld bc, -10                                                                                                                                                                                                                                                                                                              
+    call _itoa_1                                                                                                                                                                                                                                                                                                            
+    ld c, b                                                                                                                                                                                                                                                                                                                 
+                                                                                                                                                                                                                                                                                                                            
+    _itoa_1:                                                                                                                                                                                                                                                                                                                
+    ld a, '0'-1                                                                                                                                                                                                                                                                                                             
+    _itoa_2:                                                                                                                                                                                                                                                                                                                
+    inc a                                                                                                                                                                                                                                                                                                                   
+    add hl, bc                                                                                                                                                                                                                                                                                                              
+    jr c, _itoa_2                                                                                                                                                                                                                                                                                                           
+    sbc hl, bc                                                                                                                                                                                                                                                                                                              
+                                                                                                                                                                                                                                                                                                                            
+    ld (de), a                                                                                                                                                                                                                                                                                                              
+    inc de                                                                                                                                                                                                                                                                                                                  
+                                                                                                                                                                                                                                                                                                                            
+    ret
+
+delim_str: defb ": ", 0
+crlf_str: defb "\r\n", 0
+status_str: defb "Loaded modules:\r\n\r\n", 0
+nomodules_str: defb "No modules loaded", 0
+modules_str: defb "Modules loaded!", 0
+notfound_str: defb "Error: File not found!", 0
+notloaded_str: defb "Error: Module not loaded!", 0
+loaded_str: defb "Error: Module already loaded!", 0
+
+HIGH_END:
+

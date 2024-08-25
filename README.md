@@ -180,8 +180,10 @@ ZISA-X Memory Map
 ```
 Startup/Console/Temporary Stack, Run_High Target = $8000:$C000 (16K)
 CCP = $C000:$C8F9 (2297)
-BDOS = $C8F9:$D96D (4212)
-BIOS = $DA00:$EA00 (4096)
+BDOS = $C8F9:$DA00 (4212 used + 147 free = 4359)
+BIOS = $DA00:$EE00 (4825 used + 295 free = 5120)
 Interrupt Stack = $EE00:$F000 (512)
 Video FB = $F000:$FFFF (4096)
+
+Note: BDOS and BIOS areas include unused buffer for future additions. Memory map currently subject to change.
 ```
