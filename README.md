@@ -30,7 +30,11 @@ It also features hardware designs for constructing a real version of the compute
   3. Example C source for implementing a normal user program
   4. Example C source for implementing a resident kernel module
   5. Disk definition for cpmtools
-     
+
+#### Installation (PyPI coming soon):
+```
+pip install git+https://github.com/SyntheticDreams/zisa-x
+```
 #### Usage:
 ```
  zisax.py [-h] [--d0 D0] [--d1 D1] [--tpa TPA] [--trace] [--debug] [--iotest] rom nvram
