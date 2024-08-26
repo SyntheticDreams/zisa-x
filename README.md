@@ -35,6 +35,9 @@ It also features hardware designs for constructing a real version of the compute
 ```
 pip install git+https://github.com/SyntheticDreams/zisa-x
 ```
+
+This was developed and tested in Linux, though it should work in Windows with some extra effort. We'll improve the Windows installation process ASAP!
+
 #### Usage:
 ```
  zisax.py [-h] [--d0 D0] [--d1 D1] [--tpa TPA] [--trace] [--debug] [--iotest] rom nvram
